@@ -1,133 +1,4 @@
-// // AppScreen.jsx
-// import React, { useEffect, useRef, useState } from "react";
-// import { useDispatch, useSelector } from "react-redux";
-// import SessionInfo from "../../components/SessionInfo";
-// import SessionLoading from "../../components/SessionLoading";
-// import {
-//   setSessionMode,
-//   setSessionStartTime,
-//   setShowSessionDialog,
-// } from "../../states/connectionSlice";
-
-// import { ImConnection } from "react-icons/im";
-// import { Navigate, useNavigate } from "react-router-dom";
-
-// const AppScreen = ({ callRef, socket, sessionEnded }) => {
-//   const videoRef = useRef();
-//   const [remoteConnecting, setRemoteConnecting] = useState(true);
-//   const dispatch = useDispatch();
-
-//   const showSessionDialog = useSelector(
-//     (state) => state.connection.showSessionDialog
-//   );
-
-//   const userId = useSelector((state) => state.connection.userConnectionId);
-//   const remoteId = useSelector((state) => state.connection.remoteConnectionId);
-//   const navigate = useNavigate();
-
-//   useEffect(() => {
-//     // When call is accepted
-//     callRef.current.on("stream", function (remoteStream) {
-//       setRemoteConnecting(false);
-//       dispatch(setSessionMode(1));
-//       dispatch(setSessionStartTime(new Date()));
-//       dispatch(setShowSessionDialog(true));
-//       videoRef.current.srcObject = remoteStream;
-//       videoRef.current.play();
-//     });
-
-//     callRef.current.on("close", function () {
-//       alert("Connection closed");
-//       console.log("Closed");
-//     });
-
-//     callRef.current.on("error", function () {
-//       alert("Connection error");
-//       console.log("Error");
-//     });
-//   }, []);
-
-//   // Handling key press
-//   useEffect(() => {
-//     if (socket) {
-//       // -------- MOUSE CURSOR COORDINATES -------
-//       let mousePos = null;
-//       let lastPos = null;
-//       // Whenever user moves cursor, save its coordinates in a variable
-//       document.addEventListener("mousemove", (e) => {
-//         mousePos = e;
-//       });
-
-//       // Every 100ms delay, share coordinates with connected user
-//       setInterval(() => {
-//         if (mousePos) {
-//           socket.emit("mousemove", {
-//             userId: userId,
-//             remoteId: remoteId,
-//             event: { x: mousePos.pageX, y: mousePos.pageY },
-//           });
-//         }
-//       }, 100);
-
-//       // -------- MOUSE LMB (0), MMB (1), RMB (2) CLICK -------
-//       document.addEventListener("mousedown", (e) => {
-//         socket.emit("mousedown", {
-//           userId: userId,
-//           remoteId: remoteId,
-//           event: { button: e.button },
-//         });
-//       });
-
-//       // ------- SCROLL ----------
-
-//       document.addEventListener("wheel", (e) => {
-//         console.log("Scrolling " + e.deltaY);
-//         socket.emit("scroll", {
-//           userId: userId,
-//           remoteId: remoteId,
-//           event: { scroll: e.deltaY },
-//         });
-//       });
-
-//       // ------- KEYBOARD ----------
-//       document.addEventListener("keydown", (e) => {
-//         socket.emit("keydown", {
-//           userId: userId,
-//           remoteId: remoteId,
-//           event: { keyCode: e.key },
-//         });
-//       });
-//     }
-//   }, [socket]);
-
-//   useEffect(() => {
-//     if (sessionEnded) {
-//       navigate("/");
-//       window.location.reload();
-//     }
-//   }, [sessionEnded]);
-
-//   return (
-//     <div className="h-screen bg-gray-700">
-//       <video ref={videoRef} style={{ width: "100vw", height: "100vh" }} />
-//       <button
-//         onClick={() => dispatch(setShowSessionDialog(true))}
-//         className="fixed flex items-center justify-center text-xl right-0 mt-5 mr-10 top-0 text-white px-4 w-auto h-12 bg-sky-600 rounded-full hover:bg-sky-500 active:shadow-lg mouse shadow transition ease-in duration-200 focus:outline-none"
-//       >
-//         <ImConnection />
-//         <span className="ml-2 text-lg">Session Info</span>
-//       </button>
-//       {/* {remoteConnecting && <SessionLoading />} */}
-//       {showSessionDialog && <SessionInfo socket={socket} />}
-//     </div>
-//   );
-// };
-
-// export default AppScreen;
-
-
-
-// AppScreen.jsx
+// AppScreen.jsx — Fixed remote control
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import SessionInfo from "../../components/SessionInfo";
@@ -136,28 +7,26 @@ import { setShowSessionDialog } from "../../states/connectionSlice";
 const { ipcRenderer } = window.require("electron");
 
 const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteIdRef, onDisconnect, onEndSession }) => {
-  const videoRef      = useRef(null);
-  const dispatch      = useDispatch();
-  const mousePosRef   = useRef(null);
-  const screenSizeRef = useRef({ width: 1920, height: 1080 }); // host screen size
+  const videoRef       = useRef(null);
+  const dispatch       = useDispatch();
+  const mousePosRef    = useRef(null);
+  const screenSizeRef  = useRef({ width: 1920, height: 1080 });
+  const controlRef     = useRef(false); // ref mirror of controlEnabled — avoids stale closure
+  const intervalRef    = useRef(null);
 
   const showSessionDialog = useSelector((s) => s.connection.showSessionDialog);
   const userId   = useSelector((s) => s.connection.userConnectionId);
-  const remoteId = useSelector((s) => s.connection.remoteConnectionId);
 
   const [videoPlaying,   setVideoPlaying]   = useState(false);
   const [controlEnabled, setControlEnabled] = useState(false);
   const [muted,          setMuted]          = useState(false);
   const [showToolbar,    setShowToolbar]     = useState(true);
-  const toolbarTimerRef = useRef(null);
+  const toolbarTimerRef  = useRef(null);
 
-  // ── Get host screen resolution on mount ──────────────────────────────────────
+  // Get host screen size on mount
   useEffect(() => {
     ipcRenderer.invoke("GET_SCREEN_SIZE").then((size) => {
-      if (size) {
-        screenSizeRef.current = size;
-        console.log("Host screen size:", size);
-      }
+      if (size) screenSizeRef.current = size;
     });
   }, []);
 
@@ -168,14 +37,13 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     video.srcObject = stream;
     video.muted = muted;
     video.play()
-      .then(() => { console.log("✅ Video playing"); setVideoPlaying(true); })
+      .then(() => setVideoPlaying(true))
       .catch(() => setTimeout(() => video.play().then(() => setVideoPlaying(true)).catch(console.error), 600));
   }, []);
 
-  useEffect(() => { if (remoteStream)           attachStream(remoteStream);           }, [remoteStream]);
+  useEffect(() => { if (remoteStream)            attachStream(remoteStream);            }, [remoteStream]);
   useEffect(() => { if (remoteStreamRef?.current) attachStream(remoteStreamRef.current); }, []);
 
-  // ── Mute ──────────────────────────────────────────────────────────────────────
   const toggleMute = () => {
     const next = !muted;
     setMuted(next);
@@ -195,135 +63,157 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     return () => { window.removeEventListener("mousemove", resetToolbar); clearTimeout(toolbarTimerRef.current); };
   }, [resetToolbar]);
 
-  // ── CORRECT coordinate scaling ────────────────────────────────────────────────
-  // objectFit: "contain" adds letterbox bars — must account for them
-  const getScaledCoords = useCallback((e) => {
+  // ── Correct letterbox-aware coordinate scaling ────────────────────────────────
+  const getScaledCoords = (e) => {
     const video = videoRef.current;
     if (!video) return { x: 0, y: 0 };
-
-    const rect         = video.getBoundingClientRect();
-    const hostW        = screenSizeRef.current.width;
-    const hostH        = screenSizeRef.current.height;
-
-    // Calculate actual video render size inside the element (letterboxed)
-    const videoAspect  = hostW / hostH;
-    const elemAspect   = rect.width / rect.height;
+    const rect       = video.getBoundingClientRect();
+    const hostW      = screenSizeRef.current.width;
+    const hostH      = screenSizeRef.current.height;
+    const videoAspect = hostW / hostH;
+    const elemAspect  = rect.width / rect.height;
 
     let renderW, renderH, offsetX, offsetY;
-
     if (videoAspect > elemAspect) {
-      // Letterbox top/bottom (horizontal bars)
       renderW = rect.width;
       renderH = rect.width / videoAspect;
       offsetX = 0;
       offsetY = (rect.height - renderH) / 2;
     } else {
-      // Pillarbox left/right (vertical bars)
       renderH = rect.height;
       renderW = rect.height * videoAspect;
       offsetY = 0;
       offsetX = (rect.width - renderW) / 2;
     }
 
-    // Mouse position relative to actual video content (excluding bars)
-    const relX = e.clientX - rect.left - offsetX;
-    const relY = e.clientY - rect.top  - offsetY;
+    const relX = Math.max(0, Math.min(e.clientX - rect.left - offsetX, renderW));
+    const relY = Math.max(0, Math.min(e.clientY - rect.top  - offsetY, renderH));
 
-    // Clamp to video bounds
-    const clampedX = Math.max(0, Math.min(relX, renderW));
-    const clampedY = Math.max(0, Math.min(relY, renderH));
-
-    // Scale to host resolution
     return {
-      x: Math.round((clampedX / renderW) * hostW),
-      y: Math.round((clampedY / renderH) * hostH),
+      x: Math.round((relX / renderW) * hostW),
+      y: Math.round((relY / renderH) * hostH),
     };
-  }, []);
+  };
 
-  // ── Remote control event listeners ───────────────────────────────────────────
+  // ── FIXED: All event handlers defined once, use refs for live values ──────────
+  // This avoids the entire stale closure / missing deps problem
   useEffect(() => {
-    const socket = socketRef.current;
-    if (!socket || !remoteId || !userId || !controlEnabled || !videoRef.current) return;
-
     const video = videoRef.current;
+    if (!video) return;
+
+    const emit = (event, data) => {
+      const socket = socketRef.current;
+      const remoteId = String(remoteIdRef.current || "");
+      const uid = String(userId || "");
+      if (!socket || !remoteId || !uid) {
+        console.warn("emit blocked — missing:", { socket: !!socket, remoteId, uid });
+        return;
+      }
+      socket.emit(event, { userId: uid, remoteId, event: data });
+    };
 
     const onMouseMove = (e) => {
+      if (!controlRef.current) return;
       mousePosRef.current = getScaledCoords(e);
     };
 
     const onMouseDown = (e) => {
+      if (!controlRef.current) return;
       e.preventDefault();
+      e.stopPropagation();
       const coords = getScaledCoords(e);
-      // Send both mousedown AND click — more reliable across OS
-      socket.emit("mousedown", { userId, remoteId, event: { button: e.button, ...coords } });
-      socket.emit("click",     { userId, remoteId, event: { button: e.button, ...coords } });
+      console.log("🖱️ click at", coords, "button:", e.button);
+      emit("click",     { button: e.button, ...coords });
+      emit("mousedown", { button: e.button, ...coords });
     };
 
     const onMouseUp = (e) => {
-      const coords = getScaledCoords(e);
-      socket.emit("mouseup", { userId, remoteId, event: { button: e.button, ...coords } });
+      if (!controlRef.current) return;
+      emit("mouseup", { button: e.button, ...getScaledCoords(e) });
     };
 
     const onDblClick = (e) => {
+      if (!controlRef.current) return;
       e.preventDefault();
-      socket.emit("dblclick", { userId, remoteId, event: getScaledCoords(e) });
+      emit("dblclick", getScaledCoords(e));
     };
 
     const onWheel = (e) => {
+      if (!controlRef.current) return;
       e.preventDefault();
-      socket.emit("scroll", { userId, remoteId, event: { scroll: e.deltaY, ...getScaledCoords(e) } });
+      emit("scroll", { scroll: e.deltaY, ...getScaledCoords(e) });
     };
 
     const onKeyDown = (e) => {
-      if (e.ctrlKey && e.shiftKey && e.key === "I") return; // keep DevTools
-      if (e.key === "Escape") { setControlEnabled(false); return; }
+      if (!controlRef.current) return;
+      if (e.ctrlKey && e.shiftKey && e.key === "I") return;
+      if (e.key === "Escape") {
+        controlRef.current = false;
+        setControlEnabled(false);
+        return;
+      }
       e.preventDefault();
-      socket.emit("keydown", {
-        userId, remoteId,
-        event: { keyCode: e.key, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey },
-      });
+      console.log("⌨️ key:", e.key);
+      emit("keydown", { keyCode: e.key, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
     };
 
     const onKeyUp = (e) => {
-      if (e.ctrlKey && e.shiftKey && e.key === "I") return;
-      socket.emit("keyup", { userId, remoteId, event: { keyCode: e.key } });
+      if (!controlRef.current) return;
+      emit("keyup", { keyCode: e.key });
     };
 
-    // Throttled mousemove — 60fps
-    const interval = setInterval(() => {
-      if (mousePosRef.current) {
-        socket.emit("mousemove", { userId, remoteId, event: mousePosRef.current });
+    // Throttled mousemove — send at 30fps
+    intervalRef.current = setInterval(() => {
+      if (controlRef.current && mousePosRef.current) {
+        const socket   = socketRef.current;
+        const remoteId = String(remoteIdRef.current || "");
+        const uid      = String(userId || "");
+        if (socket && remoteId && uid) {
+          socket.emit("mousemove", { userId: uid, remoteId, event: mousePosRef.current });
+        }
         mousePosRef.current = null;
       }
-    }, 16);
+    }, 33);
 
-    video.addEventListener("mousemove",  onMouseMove);
-    video.addEventListener("mousedown",  onMouseDown);
-    video.addEventListener("mouseup",    onMouseUp);
-    video.addEventListener("dblclick",   onDblClick);
-    video.addEventListener("wheel",      onWheel,    { passive: false });
-    window.addEventListener("keydown",   onKeyDown);
-    window.addEventListener("keyup",     onKeyUp);
-
-    // Change cursor to crosshair when control is on
-    video.style.cursor = "crosshair";
+    // Attach ALL listeners permanently to the video element
+    // They check controlRef.current internally — no add/remove on toggle
+    video.addEventListener("mousemove", onMouseMove);
+    video.addEventListener("mousedown", onMouseDown);
+    video.addEventListener("mouseup",   onMouseUp);
+    video.addEventListener("dblclick",  onDblClick);
+    video.addEventListener("wheel",     onWheel,   { passive: false });
+    window.addEventListener("keydown",  onKeyDown);
+    window.addEventListener("keyup",    onKeyUp);
 
     return () => {
-      clearInterval(interval);
-      video.removeEventListener("mousemove",  onMouseMove);
-      video.removeEventListener("mousedown",  onMouseDown);
-      video.removeEventListener("mouseup",    onMouseUp);
-      video.removeEventListener("dblclick",   onDblClick);
-      video.removeEventListener("wheel",      onWheel);
-      window.removeEventListener("keydown",   onKeyDown);
-      window.removeEventListener("keyup",     onKeyUp);
-      video.style.cursor = "default";
+      clearInterval(intervalRef.current);
+      video.removeEventListener("mousemove", onMouseMove);
+      video.removeEventListener("mousedown", onMouseDown);
+      video.removeEventListener("mouseup",   onMouseUp);
+      video.removeEventListener("dblclick",  onDblClick);
+      video.removeEventListener("wheel",     onWheel);
+      window.removeEventListener("keydown",  onKeyDown);
+      window.removeEventListener("keyup",    onKeyUp);
     };
-  }, [controlEnabled, socketRef, userId, remoteId, getScaledCoords]);
+  }, [userId]); // only depends on userId — everything else read via refs
+
+  // ── Toggle control — update BOTH state (UI) and ref (handlers) ───────────────
+  const toggleControl = () => {
+    const next = !controlRef.current;
+    controlRef.current = next;
+    setControlEnabled(next);
+    if (videoRef.current) {
+      videoRef.current.style.cursor = next ? "crosshair" : "default";
+    }
+    console.log("🎮 Remote control:", next ? "ON" : "OFF");
+    console.log("   remoteId:", remoteIdRef.current);
+    console.log("   userId:", userId);
+    console.log("   socket connected:", socketRef.current?.connected);
+  };
 
   const handleDisconnect = () => {
     if (!window.confirm("End this session?")) return;
-    const rid = remoteIdRef?.current || remoteId;
+    const rid = remoteIdRef?.current;
     if (socketRef.current && rid) socketRef.current.emit("remotedisconnected", { remoteId: rid });
     if (callRef.current) { callRef.current.close(); callRef.current = null; }
     onDisconnect();
@@ -332,15 +222,13 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
   const btn = (bg, active) => ({
     display: "flex", alignItems: "center", gap: 6,
     padding: "7px 14px", borderRadius: 8,
-    background: bg, border: active ? "2px solid #fff" : "2px solid transparent",
+    background: bg, border: active ? "2px solid rgba(255,255,255,0.8)" : "2px solid transparent",
     color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer",
-    transition: "all 0.15s",
   });
 
   return (
     <div style={{ width: "100vw", height: "100vh", background: "#000", position: "relative", overflow: "hidden" }}>
 
-      {/* Remote screen */}
       <video
         ref={videoRef}
         autoPlay
@@ -372,18 +260,18 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
           opacity: showToolbar ? 1 : 0,
           pointerEvents: showToolbar ? "auto" : "none",
         }}>
-          {/* Status */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ade80", boxShadow: "0 0 8px #4ade80" }} />
-            <span style={{ color: "#fff", fontSize: 13, fontWeight: 500 }}>Connected · {remoteId}</span>
+            <span style={{ color: "#fff", fontSize: 13, fontWeight: 500 }}>
+              Connected · {remoteIdRef.current}
+            </span>
             {controlEnabled && (
-              <span style={{ background: "#dc2626", color: "#fff", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4, marginLeft: 6 }}>
+              <span style={{ background: "#dc2626", color: "#fff", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4 }}>
                 CONTROL ACTIVE
               </span>
             )}
           </div>
 
-          {/* Buttons */}
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={toggleMute} style={btn(muted ? "#4b5563" : "#0369a1", false)}>
               {muted
@@ -393,7 +281,7 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
               {muted ? "Unmute" : "Mute"}
             </button>
 
-            <button onClick={() => setControlEnabled(c => !c)} style={btn(controlEnabled ? "#b91c1c" : "#7c3aed", controlEnabled)}>
+            <button onClick={toggleControl} style={btn(controlEnabled ? "#b91c1c" : "#7c3aed", controlEnabled)}>
               <svg style={{width:15,height:15}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 6-5 2zm0 0l5 5"/>
               </svg>
@@ -417,14 +305,14 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
         </div>
       )}
 
-      {/* Control hint at bottom */}
+      {/* Control hint */}
       {controlEnabled && videoPlaying && (
         <div style={{
           position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)",
           background: "rgba(185,28,28,0.92)", color: "#fff",
           padding: "7px 20px", borderRadius: 20, fontSize: 12, fontWeight: 600,
           zIndex: 20, display: "flex", alignItems: "center", gap: 8,
-          boxShadow: "0 2px 12px rgba(0,0,0,0.4)",
+          pointerEvents: "none",
         }}>
           <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#fca5a5" }} />
           Remote Control Active · Press Esc to release
