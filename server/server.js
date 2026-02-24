@@ -66,13 +66,9 @@ const server = require("http").createServer(app);
 const { ExpressPeerServer } = require("peer");
 const socketIo = require("socket.io");
 
-// Required for ngrok — trust the proxy headers
 app.set("trust proxy", 1);
 
-const peerServer = ExpressPeerServer(server, {
-  debug: true,
-  proxied: true,   // important: tells PeerJS it's behind a proxy (ngrok)
-});
+const peerServer = ExpressPeerServer(server, { debug: true, proxied: true });
 app.use("/peerjs", peerServer);
 
 peerServer.on("connection", (c) => console.log("PeerJS connected:", c.getId()));
@@ -80,7 +76,7 @@ peerServer.on("disconnect", (c) => console.log("PeerJS disconnected:", c.getId()
 
 const io = socketIo(server, {
   cors: { origin: "*" },
-  transports: ["websocket", "polling"],  // websocket first for ngrok
+  transports: ["websocket", "polling"],
 });
 
 io.on("connection", (socket) => {
@@ -89,19 +85,26 @@ io.on("connection", (socket) => {
   socket.on("join",               (room)               => { console.log("Joined:", room); socket.join(room); });
   socket.on("remotedisconnected", ({ remoteId })        => io.to("User" + remoteId).emit("remotedisconnected"));
   socket.on("callrejected",       ({ remoteId })        => io.to("User" + remoteId).emit("callrejected"));
-  socket.on("mousemove",          ({ remoteId, event }) => io.to("User" + remoteId).emit("mousemove", event));
-  socket.on("mousedown",          ({ remoteId, event }) => io.to("User" + remoteId).emit("mousedown", event));
-  socket.on("mouseup",            ({ remoteId, event }) => io.to("User" + remoteId).emit("mouseup",   event));
-  socket.on("dblclick",           ({ remoteId, event }) => io.to("User" + remoteId).emit("dblclick",  event));
-  socket.on("scroll",             ({ remoteId, event }) => io.to("User" + remoteId).emit("scroll",    event));
-  socket.on("keydown",            ({ remoteId, event }) => io.to("User" + remoteId).emit("keydown",   event));
-  socket.on("keyup",              ({ remoteId, event }) => io.to("User" + remoteId).emit("keyup",     event));
-  socket.on("requestcontrol",     ({ userId, remoteId }) => io.to("User" + remoteId).emit("controlrequested", { from: userId }));
-  socket.on("releasecontrol",     ({ userId, remoteId }) => io.to("User" + remoteId).emit("controlreleased",  { from: userId }));
+
+  // Mouse events
+  socket.on("mousemove", ({ remoteId, event }) => io.to("User" + remoteId).emit("mousemove", event));
+  socket.on("mousedown", ({ remoteId, event }) => io.to("User" + remoteId).emit("mousedown", event));
+  socket.on("mouseup",   ({ remoteId, event }) => io.to("User" + remoteId).emit("mouseup",   event));
+  socket.on("click",     ({ remoteId, event }) => io.to("User" + remoteId).emit("click",     event));
+  socket.on("dblclick",  ({ remoteId, event }) => io.to("User" + remoteId).emit("dblclick",  event));
+  socket.on("scroll",    ({ remoteId, event }) => io.to("User" + remoteId).emit("scroll",    event));
+
+  // Keyboard events
+  socket.on("keydown",   ({ remoteId, event }) => io.to("User" + remoteId).emit("keydown",   event));
+  socket.on("keyup",     ({ remoteId, event }) => io.to("User" + remoteId).emit("keyup",     event));
+
+  socket.on("requestcontrol", ({ userId, remoteId }) => io.to("User" + remoteId).emit("controlrequested", { from: userId }));
+  socket.on("releasecontrol", ({ userId, remoteId }) => io.to("User" + remoteId).emit("controlreleased",  { from: userId }));
 
   socket.on("disconnect", () => console.log("Socket disconnected:", socket.id));
 });
 
 server.listen(5000, "0.0.0.0", () => {
   console.log("✅ Server on port 5000");
+  console.log("   Run: ngrok http 5000");
 });
