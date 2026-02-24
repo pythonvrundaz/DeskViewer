@@ -6,7 +6,8 @@ import { setShowSessionDialog } from "../../states/connectionSlice";
 
 const { ipcRenderer } = window.require("electron");
 
-const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteIdRef, onDisconnect, onEndSession }) => {
+// FIX: Accept userIdRef as a prop — never stale, no Redux dependency in effect
+const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteIdRef, userIdRef, onDisconnect, onEndSession }) => {
   const videoRef      = useRef(null);
   const dispatch      = useDispatch();
   const mousePosRef   = useRef(null);
@@ -14,7 +15,6 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
   const controlRef    = useRef(false);
 
   const showSessionDialog = useSelector((s) => s.connection.showSessionDialog);
-  const userId = useSelector((s) => s.connection.userConnectionId);
 
   const [videoPlaying,   setVideoPlaying]   = useState(false);
   const [controlEnabled, setControlEnabled] = useState(false);
@@ -24,7 +24,7 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
 
   useEffect(() => {
     ipcRenderer.invoke("GET_SCREEN_SIZE").then((size) => {
-      if (size) { screenSizeRef.current = size; console.log("Host screen:", size); }
+      if (size) { screenSizeRef.current = size; console.log("🖥️ Host screen:", size); }
     });
   }, []);
 
@@ -83,24 +83,22 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     };
   };
 
-  // ── Attach ALL listeners ONCE on mount ───────────────────────────────────────
-  // Use refs for everything — zero stale closure issues
+  // ── Listeners attached ONCE — all values read from refs, never stale ──────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    // Direct emit — reads refs at call time, never stale
     const emit = (eventName, data) => {
       const socket   = socketRef.current;
       const remoteId = String(remoteIdRef.current || "");
-      const uid      = String(userId || "");
+      const uid      = String(userIdRef.current   || ""); // FIX: read from ref, not closure
 
-      // DEBUG — log every attempted emit
-      console.log(`emit [${eventName}]`, { remoteId, uid, connected: socket?.connected, data });
+      console.log(`emit [${eventName}]`, { remoteId, uid, connected: socket?.connected });
 
-      if (!socket?.connected) { console.warn("Socket not connected!"); return; }
-      if (!remoteId)          { console.warn("remoteId is empty!");    return; }
-      if (!uid)               { console.warn("userId is empty!");      return; }
+      if (!socket)           { console.warn("❌ No socket!");         return; }
+      if (!socket.connected) { console.warn("❌ Socket disconnected!"); return; }
+      if (!remoteId)         { console.warn("❌ remoteId empty!");     return; }
+      if (!uid)              { console.warn("❌ userId empty!");       return; }
 
       socket.emit(eventName, { userId: uid, remoteId, event: data });
     };
@@ -115,7 +113,7 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
       e.preventDefault();
       e.stopPropagation();
       const coords = getScaledCoords(e);
-      console.log("🖱️ MOUSEDOWN at", coords);
+      console.log("🖱️ click at", coords);
       emit("click",     { button: e.button, ...coords });
       emit("mousedown", { button: e.button, ...coords });
     };
@@ -143,11 +141,11 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
       if (e.key === "Escape") {
         controlRef.current = false;
         setControlEnabled(false);
-        if (video) video.style.cursor = "default";
+        video.style.cursor = "default";
         return;
       }
       e.preventDefault();
-      console.log("⌨️ KEYDOWN:", e.key);
+      console.log("⌨️ key:", e.key);
       emit("keydown", { keyCode: e.key, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
     };
 
@@ -156,15 +154,13 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
       emit("keyup", { keyCode: e.key });
     };
 
-    // Throttled mousemove at ~30fps
     const interval = setInterval(() => {
-      if (controlRef.current && mousePosRef.current) {
-        const socket   = socketRef.current;
-        const remoteId = String(remoteIdRef.current || "");
-        const uid      = String(userId || "");
-        if (socket?.connected && remoteId && uid) {
-          socket.emit("mousemove", { userId: uid, remoteId, event: mousePosRef.current });
-        }
+      if (!controlRef.current || !mousePosRef.current) return;
+      const socket   = socketRef.current;
+      const remoteId = String(remoteIdRef.current || "");
+      const uid      = String(userIdRef.current   || "");
+      if (socket?.connected && remoteId && uid) {
+        socket.emit("mousemove", { userId: uid, remoteId, event: mousePosRef.current });
         mousePosRef.current = null;
       }
     }, 33);
@@ -187,19 +183,17 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
       window.removeEventListener("keydown",  onKeyDown);
       window.removeEventListener("keyup",    onKeyUp);
     };
-  }, []); // ← empty deps — attach once, forever. Refs handle fresh values.
+  }, []); // empty — all live values via refs
 
   const toggleControl = () => {
     const next = !controlRef.current;
     controlRef.current = next;
     setControlEnabled(next);
     if (videoRef.current) videoRef.current.style.cursor = next ? "crosshair" : "default";
-
-    // DEBUG on toggle
-    console.log("🎮 Control toggled:", next ? "ON" : "OFF");
-    console.log("   remoteIdRef:", remoteIdRef.current);
-    console.log("   userId:", userId);
-    console.log("   socket connected:", socketRef.current?.connected);
+    console.log("🎮 Control:", next ? "ON" : "OFF",
+      "| remoteId:", remoteIdRef.current,
+      "| userId:", userIdRef.current,
+      "| socket:", socketRef.current?.connected);
   };
 
   const handleDisconnect = () => {

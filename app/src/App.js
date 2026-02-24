@@ -1,92 +1,3 @@
-// // App.js
-// import React, { useEffect, useRef, useState } from "react";
-// import { BrowserRouter, HashRouter, Route, Routes } from "react-router-dom";
-// import ConnectionScreen from "./screens/connection/ConnectionScreen";
-// import AppScreen from "./screens/app/AppScreen";
-// import io from "socket.io-client";
-// import { useDispatch, useSelector } from "react-redux";
-// import { setShowSessionDialog } from "./states/connectionSlice";
-
-// // const ipcRenderer = window.electronAPI;
-
-// const { ipcRenderer } = window.require("electron");
-
-// // https://github.com/ishantchauhan710/DeskViewer/tree/master?tab=readme-ov-file
-
-// // npx electron . 
-
-// const App = () => {
-//   const callRef = useRef();
-
-//   const socket = io("http://127.0.0.1:5000");
-//   // const socket = io(" 192.168.1.2:5000");
-
-//   const remoteId = useSelector((state) => state.connection.remoteConnectionId);
-//   const [sessionEnded, setSessionEnded] = useState(false);
-
-//   // Socket connection
-//   useEffect(() => {
-//     socket.on("connect", () => {
-//       console.log("Socket connected");
-//     });
-
-//     socket.on("connect_error", (e) => {
-//       console.log("Socket connection error, retrying..." + e);
-//       setTimeout(() => socket.connect(), 5000);
-//     });
-
-//     socket.on("disconnect", () => {
-//       console.log("Socket disconnected");
-//       if (remoteId) {
-//         socket.emit("remotedisconnected", { remoteId: remoteId });
-//       }
-//     });
-
-//     socket.on("remotedisconnected", () => {
-//       //alert("Remote disconnected");
-//       setSessionEnded(true);
-//     });
-
-//     // --------- MOUSE AND KEYBOARD EVENTS ----------
-
-//     socket.on("mousemove", (event) => {
-//       //console.log(`Mousemove: x=${event.x} y=${event.y}`);
-//       ipcRenderer.send("mousemove", event);
-//     });
-
-//     socket.on("mousedown", (event) => {
-//       console.log(`Mouse down: ${event.button}`);
-//       ipcRenderer.send("mousedown", event);
-//     });
-
-//     socket.on("scroll", (event) => {
-//       console.log(`Scroll: ${event.scroll}`);
-//       ipcRenderer.send("scroll", event);
-//     });
-
-//     socket.on("keydown", (event) => {
-//       console.log(`Key pressed: ${event.keyCode}`);
-//       ipcRenderer.send("keydown", event);
-//     });
-//   }, []);
-
-//   return (
-//     socket && (
-//       <HashRouter>
-//         <Routes>
-//           <Route path="/" exact element={<ConnectionScreen callRef={callRef} socket={socket} />} />
-//           <Route path="/app" element={ <AppScreen callRef={callRef} socket={socket} sessionEnded={sessionEnded} /> } />
-//           <Route path="*" element={<div>DeskViewer Error: Page not found</div>} />
-//         </Routes>
-//       </HashRouter>
-//     )
-//   );
-// };
-
-// export default App;
-
-// ---------------------------------------------------------------------------------------------------------------------------------
-
 // App.js
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import ConnectionScreen from "./screens/connection/ConnectionScreen";
@@ -122,12 +33,13 @@ const App = () => {
   const callRef         = useRef(null);
   const remoteStreamRef = useRef(null);
   const remoteIdRef     = useRef("");
+  const userIdRef       = useRef("");
 
   const [myId, setMyId]                         = useState("");
   const [currentScreen, setCurrentScreen]       = useState("home");
   const [remoteStream, setRemoteStream]         = useState(null);
   const [sessionEnded, setSessionEnded]         = useState(false);
-  const [callRejected, setCallRejected]         = useState(false);  // NEW
+  const [callRejected, setCallRejected]         = useState(false);
   const [incomingCall, setIncomingCall]         = useState(null);
   const [incomingCallerId, setIncomingCallerId] = useState("");
   const [sources, setSources]                   = useState([]);
@@ -137,26 +49,27 @@ const App = () => {
   useEffect(() => {
     const uid = String(Math.floor(Math.random() * 9000000000) + 1000000000);
     setMyId(uid);
+    userIdRef.current = uid;
     dispatch(setUserConnectionId(uid));
 
-    // local
-    // const socket = io("http://127.0.0.1:5000", { reconnectionDelay: 1000 });
-
-    // ngrok
-    
-    const socket = io("https://laevorotatory-painstakingly-lorraine.ngrok-free.dev", { reconnectionDelay: 1000 });
+    // FIX for ngrok 400 error:
+    // 1. Use polling FIRST then upgrade to websocket (ngrok blocks direct WS upgrade)
+    // 2. Send ngrok-skip-browser-warning header (required by ngrok free tier)
+    const socket = io(CONFIG.SOCKET_URL, {
+      reconnectionDelay: 1000,
+      transports: ["polling", "websocket"],   // polling first! then upgrade
+      extraHeaders: {
+        "ngrok-skip-browser-warning": "true", // bypasses ngrok's browser warning page
+      },
+    });
     socketRef.current = socket;
 
-    socket.on("connect", () => {
-      console.log("🟢 Socket:", socket.id);
-      socket.emit("join", "User" + uid);
-    });
+    socket.on("connect",    () => { console.log("🟢 Socket:", socket.id); socket.emit("join", "User" + uid); });
+    socket.on("disconnect", (r) => console.warn("🔴 Socket disconnected:", r));
+    socket.on("connect_error", (e) => console.error("🔴 Socket error:", e.message));
 
     socket.on("remotedisconnected", () => setSessionEnded(true));
-
-    // NEW: host rejected — viewer gets this and goes back home with message
     socket.on("callrejected", () => {
-      console.log("❌ Call was rejected by host");
       setCallRejected(true);
       setCurrentScreen("home");
       if (callRef.current) { callRef.current.close(); callRef.current = null; }
@@ -165,17 +78,17 @@ const App = () => {
     socket.on("mousemove", (e) => ipcRenderer.send("mousemove", e));
     socket.on("mousedown", (e) => ipcRenderer.send("mousedown", e));
     socket.on("mouseup",   (e) => ipcRenderer.send("mouseup",   e));
+    socket.on("click",     (e) => ipcRenderer.send("click",     e));
     socket.on("dblclick",  (e) => ipcRenderer.send("dblclick",  e));
     socket.on("scroll",    (e) => ipcRenderer.send("scroll",    e));
     socket.on("keydown",   (e) => ipcRenderer.send("keydown",   e));
     socket.on("keyup",     (e) => ipcRenderer.send("keyup",     e));
 
-    
     const peer = new Peer(uid, {
       host:   CONFIG.PEER_HOST,
       port:   CONFIG.PEER_PORT,
       path:   CONFIG.PEER_PATH,
-      secure: CONFIG.PEER_SECURE,  // true for https/ngrok
+      secure: CONFIG.PEER_SECURE,
       debug:  2,
       config: {
         iceServers: [
@@ -187,14 +100,14 @@ const App = () => {
       },
     });
 
-    peer.on("open",        (id)  => console.log("✅ PeerJS:", id));
-    peer.on("disconnected", ()   => { if (!peer.destroyed) peer.reconnect(); });
-    peer.on("error",       (err) => {
-      console.error("❌ Peer:", err.type);
+    peer.on("open",         (id)  => console.log("✅ PeerJS:", id));
+    peer.on("disconnected", ()    => { if (!peer.destroyed) peer.reconnect(); });
+    peer.on("error",        (err) => {
+      console.error("❌ Peer:", err.type, err.message);
       if (err.type === "unavailable-id") window.location.reload();
     });
     peer.on("call", (call) => {
-      console.log("📞 Incoming call from:", call.peer);
+      console.log("📞 Incoming call:", call.peer);
       setIncomingCall(call);
       setIncomingCallerId(call.peer);
     });
@@ -211,7 +124,6 @@ const App = () => {
     dispatch(setShowSessionDialog(false));
   }, []);
 
-  // ── HOST: Accept — show source picker ────────────────────────────────────────
   const acceptCall = useCallback(async () => {
     const call = incomingCall;
     setIncomingCall(null);
@@ -222,25 +134,15 @@ const App = () => {
     setShowPicker(true);
   }, [incomingCall]);
 
-  // ── HOST: Reject — close call AND notify viewer via socket ───────────────────
   const rejectCall = useCallback(() => {
-    const call = incomingCall;
+    const call     = incomingCall;
     const callerId = incomingCallerId;
-
     setIncomingCall(null);
     setIncomingCallerId("");
-
-    // Close the PeerJS call
     if (call) call.close();
-
-    // Tell viewer via socket so their screen goes back to home
-    const socket = socketRef.current;
-    if (socket && callerId) {
-      socket.emit("callrejected", { remoteId: callerId });
-    }
+    socketRef.current?.emit("callrejected", { remoteId: callerId });
   }, [incomingCall, incomingCallerId]);
 
-  // ── HOST: Source selected ─────────────────────────────────────────────────────
   const onSourceSelected = useCallback(async (sourceId) => {
     setShowPicker(false);
     const call = pendingCall;
@@ -249,63 +151,40 @@ const App = () => {
     await ipcRenderer.invoke("MINIMIZE_WIN");
     await new Promise((r) => setTimeout(r, 500));
 
-    try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: { mandatory: { chromeMediaSource: "desktop" } },
-        video: {
-          mandatory: {
-            chromeMediaSource: "desktop",
-            chromeMediaSourceId: sourceId,
-            minWidth: 1280, maxWidth: 1920,
-            minHeight: 720,  maxHeight: 1080,
-          },
+    const tryCapture = (withAudio) => navigator.mediaDevices.getUserMedia({
+      audio: withAudio ? { mandatory: { chromeMediaSource: "desktop" } } : false,
+      video: {
+        mandatory: {
+          chromeMediaSource: "desktop",
+          chromeMediaSourceId: sourceId,
+          minWidth: 1280, maxWidth: 1920,
+          minHeight: 720,  maxHeight: 1080,
         },
-      });
+      },
+    });
 
-      call.answer(mediaStream);
-      callRef.current = call;
+    try {
+      let stream;
+      try   { stream = await tryCapture(true);  }
+      catch { stream = await tryCapture(false); }
+
+      call.answer(stream);
+      callRef.current     = call;
       remoteIdRef.current = call.peer;
       dispatch(setRemoteConnectionId(call.peer));
       dispatch(setSessionMode(0));
       dispatch(setSessionStartTime(new Date()));
       dispatch(setShowSessionDialog(true));
       setTimeout(() => ipcRenderer.invoke("RESTORE_WIN"), 1000);
-      call.on("close", () => resetSession());
+      call.on("close", resetSession);
       call.on("error", (e) => console.error("Host call error:", e));
-
     } catch (e) {
       ipcRenderer.invoke("RESTORE_WIN");
-      // Retry without audio if system audio capture fails
-      try {
-        const videoOnly = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: {
-            mandatory: {
-              chromeMediaSource: "desktop",
-              chromeMediaSourceId: sourceId,
-              minWidth: 1280, maxWidth: 1920,
-              minHeight: 720,  maxHeight: 1080,
-            },
-          },
-        });
-        call.answer(videoOnly);
-        callRef.current = call;
-        remoteIdRef.current = call.peer;
-        dispatch(setRemoteConnectionId(call.peer));
-        dispatch(setSessionMode(0));
-        dispatch(setSessionStartTime(new Date()));
-        dispatch(setShowSessionDialog(true));
-        call.on("close", () => resetSession());
-      } catch (e2) {
-        alert("Screen capture failed: " + e2.message);
-        // Reject the call since capture failed — notify viewer
-        const socket = socketRef.current;
-        if (socket && call.peer) socket.emit("callrejected", { remoteId: call.peer });
-      }
+      alert("Screen capture failed: " + e.message);
+      socketRef.current?.emit("callrejected", { remoteId: call.peer });
     }
   }, [pendingCall, resetSession]);
 
-  // ── VIEWER: Start call ────────────────────────────────────────────────────────
   const startCall = useCallback((remoteId) => {
     const peer = peerInstance.current;
     if (!peer || peer.destroyed) { alert("Not connected to server yet."); return; }
@@ -313,42 +192,31 @@ const App = () => {
     dispatch(setRemoteConnectionId(remoteId));
     remoteIdRef.current = remoteId;
 
-    const dummyStream = createDummyStream();
-    const call = peer.call(String(remoteId), dummyStream);
+    const call = peer.call(String(remoteId), createDummyStream());
     if (!call) { alert("Could not reach that peer. Are they online?"); return; }
 
     callRef.current = call;
     setCurrentScreen("viewing");
 
     call.on("stream", (stream) => {
-      console.log("🎉 Stream received! tracks:", stream.getTracks().map(t => t.kind));
+      console.log("🎉 Stream received!", stream.getTracks().map(t => t.kind));
       remoteStreamRef.current = stream;
       setRemoteStream(stream);
       dispatch(setSessionMode(1));
       dispatch(setSessionStartTime(new Date()));
     });
-
-    call.on("error", (err) => { console.error("Call error:", err); resetSession(); });
-    call.on("close", ()    => { console.log("Call closed");         resetSession(); });
+    call.on("error",  (err) => { console.error("Call error:", err); resetSession(); });
+    call.on("close",  ()    => resetSession());
   }, [resetSession]);
 
-  // ── Session ended / rejected ──────────────────────────────────────────────────
+  useEffect(() => { if (sessionEnded)  { resetSession(); setSessionEnded(false); } }, [sessionEnded]);
   useEffect(() => {
-    if (sessionEnded) { resetSession(); setSessionEnded(false); }
-  }, [sessionEnded, resetSession]);
-
-  // Auto-clear rejected state after showing message
-  useEffect(() => {
-    if (callRejected) {
-      const t = setTimeout(() => setCallRejected(false), 4000);
-      return () => clearTimeout(t);
-    }
+    if (callRejected) { const t = setTimeout(() => setCallRejected(false), 4000); return () => clearTimeout(t); }
   }, [callRejected]);
 
   const handleDisconnect = useCallback(() => {
-    const socket = socketRef.current;
     const rid = remoteIdRef.current;
-    if (socket && rid) socket.emit("remotedisconnected", { remoteId: rid });
+    if (socketRef.current && rid) socketRef.current.emit("remotedisconnected", { remoteId: rid });
     if (callRef.current) { callRef.current.close(); callRef.current = null; }
     resetSession();
   }, [resetSession]);
@@ -361,6 +229,7 @@ const App = () => {
         socketRef={socketRef}
         callRef={callRef}
         remoteIdRef={remoteIdRef}
+        userIdRef={userIdRef}
         onDisconnect={handleDisconnect}
         onEndSession={handleDisconnect}
       />
@@ -378,7 +247,7 @@ const App = () => {
         rejectCall={rejectCall}
         startCall={startCall}
         onEndSession={handleDisconnect}
-        callRejected={callRejected}        // show rejection banner
+        callRejected={callRejected}
       />
       {showPicker && (
         <SourcePicker
@@ -386,13 +255,9 @@ const App = () => {
           onSelect={onSourceSelected}
           onCancel={() => {
             setShowPicker(false);
-            // If host cancels picker, also notify viewer
             if (pendingCall) {
               pendingCall.close();
-              const socket = socketRef.current;
-              if (socket && pendingCall.peer) {
-                socket.emit("callrejected", { remoteId: pendingCall.peer });
-              }
+              socketRef.current?.emit("callrejected", { remoteId: pendingCall.peer });
               setPendingCall(null);
             }
           }}
