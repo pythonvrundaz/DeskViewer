@@ -83,6 +83,8 @@ const App = () => {
     socket.on("scroll",    (e) => ipcRenderer.send("scroll",    e));
     socket.on("keydown",   (e) => ipcRenderer.send("keydown",   e));
     socket.on("keyup",     (e) => ipcRenderer.send("keyup",     e));
+    // When viewer enables control, they send stream resolution so host can scale correctly
+    socket.on("stream-resolution", (e) => ipcRenderer.send("stream-resolution", e));
 
     const peer = new Peer(uid, {
       host:   CONFIG.PEER_HOST,

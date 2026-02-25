@@ -46,6 +46,7 @@ io.on("connection", (socket) => {
   socket.on("keydown",   ({ remoteId, event }) => io.to("User" + remoteId).emit("keydown",   event));
   socket.on("keyup",     ({ remoteId, event }) => io.to("User" + remoteId).emit("keyup",     event));
 
+  socket.on("stream-resolution", ({ remoteId, event }) => io.to("User" + remoteId).emit("stream-resolution", event));
   socket.on("requestcontrol", ({ userId, remoteId }) => io.to("User" + remoteId).emit("controlrequested", { from: userId }));
   socket.on("releasecontrol", ({ userId, remoteId }) => io.to("User" + remoteId).emit("controlreleased",  { from: userId }));
 
