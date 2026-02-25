@@ -1,5 +1,5 @@
 // electron.js
-const { app, BrowserWindow, ipcMain, desktopCapturer, screen } = require("electron");
+const { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut } = require("electron");
 
 let win;
 
@@ -27,9 +27,38 @@ ipcMain.handle("MINIMIZE_WIN",    () => win?.hide());
 ipcMain.handle("RESTORE_WIN",     () => win?.show());
 ipcMain.handle("GET_SCREEN_SIZE", () => {
   const b = screen.getPrimaryDisplay().bounds;
-  console.log("Screen size:", b.width, b.height);
   return { width: b.width, height: b.height };
 });
+
+// ── ALT+TAB FIX ───────────────────────────────────────────────────────────────
+// When viewer has remote control, intercept system shortcuts so they go to HOST
+// instead of switching windows on the VIEWER's own PC
+ipcMain.on("set-global-capture", (_, enabled) => {
+  if (enabled) {
+    // Intercept Alt+Tab — forward to renderer as keydown event
+    globalShortcut.register("Alt+Tab", () => {
+      win?.webContents.send("global-keydown", { keyCode: "Tab", ctrl: false, shift: false, alt: true, meta: false });
+    });
+    globalShortcut.register("Alt+Shift+Tab", () => {
+      win?.webContents.send("global-keydown", { keyCode: "Tab", ctrl: false, shift: true, alt: true, meta: false });
+    });
+    // Intercept Win/Super key
+    globalShortcut.register("Super", () => {
+      win?.webContents.send("global-keydown", { keyCode: "Meta", ctrl: false, shift: false, alt: false, meta: true });
+    });
+    // Intercept Alt+F4 (would close viewer window)
+    globalShortcut.register("Alt+F4", () => {
+      win?.webContents.send("global-keydown", { keyCode: "F4", ctrl: false, shift: false, alt: true, meta: false });
+    });
+    console.log("🔒 Global shortcuts captured (control mode ON)");
+  } else {
+    globalShortcut.unregisterAll();
+    console.log("🔓 Global shortcuts released (control mode OFF)");
+  }
+});
+
+// Clean up on exit
+app.on("will-quit", () => globalShortcut.unregisterAll());
 
 // ── Load nut-js ───────────────────────────────────────────────────────────────
 let mouse, keyboard, Button, Key;
@@ -41,27 +70,22 @@ try {
   Key      = nut.Key;
   mouse.config.mouseSpeed     = 2000;
   keyboard.config.autoDelayMs = 0;
-  console.log("✅ nut-js loaded. Button.LEFT =", Button.LEFT, "Key.Return =", Key.Return);
+  console.log("✅ nut-js loaded");
 } catch (e) {
-  console.error("❌ nut-js FAILED to load:", e.message);
-  console.error("   Run: npm install @nut-tree-fork/nut-js");
+  console.error("❌ nut-js failed:", e.message);
 }
 
 // ── Mouse ─────────────────────────────────────────────────────────────────────
 ipcMain.on("mousemove", async (_, { x, y }) => {
-  try { await mouse?.setPosition({ x: Math.round(x), y: Math.round(y) }); }
-  catch (e) { console.error("mousemove error:", e.message); }
+  try { await mouse?.setPosition({ x: Math.round(x), y: Math.round(y) }); } catch {}
 });
 
 ipcMain.on("click", async (_, { button, x, y }) => {
-  console.log("🖱️ click received at", x, y, "button:", button);
   try {
-    if (!mouse) { console.error("mouse is null — nut-js not loaded!"); return; }
+    if (!mouse) return;
     await mouse.setPosition({ x: Math.round(x), y: Math.round(y) });
     const btn = button === 2 ? Button.RIGHT : button === 1 ? Button.MIDDLE : Button.LEFT;
-    console.log("   clicking with button:", btn);
     await mouse.click(btn);
-    console.log("   ✅ click done");
   } catch (e) { console.error("click error:", e.message); }
 });
 
@@ -83,7 +107,6 @@ ipcMain.on("mouseup", async (_, { button }) => {
 });
 
 ipcMain.on("dblclick", async (_, { x, y }) => {
-  console.log("🖱️ dblclick at", x, y);
   try {
     if (!mouse) return;
     await mouse.setPosition({ x: Math.round(x), y: Math.round(y) });
@@ -108,37 +131,30 @@ const KEY_MAP = {
   "Home":"Home","End":"End","PageUp":"PageUp","PageDown":"PageDown",
   "F1":"F1","F2":"F2","F3":"F3","F4":"F4","F5":"F5","F6":"F6",
   "F7":"F7","F8":"F8","F9":"F9","F10":"F10","F11":"F11","F12":"F12",
-  "CapsLock":"CapsLock",
+  "CapsLock":"CapsLock","Meta":"LeftSuper",
 };
 
 ipcMain.on("keydown", async (_, { keyCode, ctrl, shift, alt, meta }) => {
-  console.log("⌨️ keydown received:", keyCode, { ctrl, shift, alt });
   try {
-    if (!keyboard) { console.error("keyboard is null — nut-js not loaded!"); return; }
-
+    if (!keyboard) return;
     const mods = [];
     if (ctrl)  mods.push(Key.LeftControl);
     if (shift) mods.push(Key.LeftShift);
     if (alt)   mods.push(Key.LeftAlt);
     if (meta)  mods.push(Key.LeftSuper);
 
-    // Single character, no modifiers → just type it
     if (keyCode.length === 1 && mods.length === 0) {
-      console.log("   typing char:", keyCode);
       await keyboard.type(keyCode);
       return;
     }
 
     const keyName = KEY_MAP[keyCode] ?? (keyCode.length === 1 ? keyCode.toUpperCase() : null);
-    if (!keyName) { console.log("   unmapped key:", keyCode); return; }
-
+    if (!keyName) return;
     const nutKey = Key[keyName];
-    if (nutKey === undefined) { console.log("   Key not in enum:", keyName); return; }
+    if (nutKey === undefined) return;
 
-    console.log("   pressing key:", keyName, "with mods:", mods.length);
     await keyboard.pressKey(...mods, nutKey);
     await keyboard.releaseKey(...mods, nutKey);
-    console.log("   ✅ key done");
   } catch (e) { console.error("keydown error:", e.message); }
 });
 

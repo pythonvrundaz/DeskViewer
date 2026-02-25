@@ -6,13 +6,11 @@ import { setShowSessionDialog } from "../../states/connectionSlice";
 
 const { ipcRenderer } = window.require("electron");
 
-// FIX: Accept userIdRef as a prop — never stale, no Redux dependency in effect
 const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteIdRef, userIdRef, onDisconnect, onEndSession }) => {
-  const videoRef      = useRef(null);
-  const dispatch      = useDispatch();
-  const mousePosRef   = useRef(null);
-  const screenSizeRef = useRef({ width: 1920, height: 1080 });
-  const controlRef    = useRef(false);
+  const videoRef    = useRef(null);
+  const dispatch    = useDispatch();
+  const mousePosRef = useRef(null);
+  const controlRef  = useRef(false);
 
   const showSessionDialog = useSelector((s) => s.connection.showSessionDialog);
 
@@ -21,12 +19,6 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
   const [muted,          setMuted]          = useState(false);
   const [showToolbar,    setShowToolbar]     = useState(true);
   const toolbarTimerRef = useRef(null);
-
-  useEffect(() => {
-    ipcRenderer.invoke("GET_SCREEN_SIZE").then((size) => {
-      if (size) { screenSizeRef.current = size; console.log("🖥️ Host screen:", size); }
-    });
-  }, []);
 
   const attachStream = useCallback((stream) => {
     if (!stream || !videoRef.current) return;
@@ -59,31 +51,55 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     return () => { window.removeEventListener("mousemove", resetToolbar); clearTimeout(toolbarTimerRef.current); };
   }, [resetToolbar]);
 
+  // ── CURSOR GAP FIX ────────────────────────────────────────────────────────────
+  // Root cause: we were scaling to HOST SCREEN SIZE (e.g. 1920x1080)
+  // but the video stream is captured at a DIFFERENT resolution (e.g. 1280x720)
+  // This ratio mismatch causes the cursor to land in the wrong position
+  //
+  // Fix: use video.videoWidth / video.videoHeight — the ACTUAL stream resolution
+  // This is always correct regardless of what resolution the host screen is
   const getScaledCoords = (e) => {
     const video = videoRef.current;
     if (!video) return { x: 0, y: 0 };
-    const rect        = video.getBoundingClientRect();
-    const hostW       = screenSizeRef.current.width;
-    const hostH       = screenSizeRef.current.height;
-    const videoAspect = hostW / hostH;
-    const elemAspect  = rect.width / rect.height;
+
+    const rect = video.getBoundingClientRect();
+
+    // ACTUAL pixels in the video stream — not screen size
+    const streamW = video.videoWidth  || 1280;
+    const streamH = video.videoHeight || 720;
+
+    const streamAspect = streamW / streamH;
+    const elemAspect   = rect.width / rect.height;
+
+    // Calculate where the actual video content is rendered inside the element
+    // objectFit:contain adds black bars on sides or top/bottom
     let renderW, renderH, offsetX, offsetY;
-    if (videoAspect > elemAspect) {
-      renderW = rect.width; renderH = rect.width / videoAspect;
-      offsetX = 0;          offsetY = (rect.height - renderH) / 2;
+    if (streamAspect > elemAspect) {
+      // Wider than element → black bars on TOP and BOTTOM
+      renderW = rect.width;
+      renderH = rect.width / streamAspect;
+      offsetX = 0;
+      offsetY = (rect.height - renderH) / 2;
     } else {
-      renderH = rect.height; renderW = rect.height * videoAspect;
-      offsetY = 0;           offsetX = (rect.width - renderW) / 2;
+      // Taller than element → black bars on LEFT and RIGHT
+      renderH = rect.height;
+      renderW = rect.height * streamAspect;
+      offsetX = (rect.width - renderW) / 2;
+      offsetY = 0;
     }
+
+    // Mouse position relative to actual video content (not the black bars)
     const relX = Math.max(0, Math.min(e.clientX - rect.left - offsetX, renderW));
     const relY = Math.max(0, Math.min(e.clientY - rect.top  - offsetY, renderH));
+
+    // Scale to stream resolution
     return {
-      x: Math.round((relX / renderW) * hostW),
-      y: Math.round((relY / renderH) * hostH),
+      x: Math.round((relX / renderW) * streamW),
+      y: Math.round((relY / renderH) * streamH),
     };
   };
 
-  // ── Listeners attached ONCE — all values read from refs, never stale ──────────
+  // ── All listeners attached once ───────────────────────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -91,15 +107,8 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     const emit = (eventName, data) => {
       const socket   = socketRef.current;
       const remoteId = String(remoteIdRef.current || "");
-      const uid      = String(userIdRef.current   || ""); // FIX: read from ref, not closure
-
-      console.log(`emit [${eventName}]`, { remoteId, uid, connected: socket?.connected });
-
-      if (!socket)           { console.warn("❌ No socket!");         return; }
-      if (!socket.connected) { console.warn("❌ Socket disconnected!"); return; }
-      if (!remoteId)         { console.warn("❌ remoteId empty!");     return; }
-      if (!uid)              { console.warn("❌ userId empty!");       return; }
-
+      const uid      = String(userIdRef.current   || "");
+      if (!socket?.connected || !remoteId || !uid) return;
       socket.emit(eventName, { userId: uid, remoteId, event: data });
     };
 
@@ -113,7 +122,6 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
       e.preventDefault();
       e.stopPropagation();
       const coords = getScaledCoords(e);
-      console.log("🖱️ click at", coords);
       emit("click",     { button: e.button, ...coords });
       emit("mousedown", { button: e.button, ...coords });
     };
@@ -137,15 +145,15 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
 
     const onKeyDown = (e) => {
       if (!controlRef.current) return;
-      if (e.ctrlKey && e.shiftKey && e.key === "I") return;
+      if (e.ctrlKey && e.shiftKey && e.key === "I") return; // keep DevTools
       if (e.key === "Escape") {
         controlRef.current = false;
         setControlEnabled(false);
         video.style.cursor = "default";
+        ipcRenderer.send("set-global-capture", false);
         return;
       }
       e.preventDefault();
-      console.log("⌨️ key:", e.key);
       emit("keydown", { keyCode: e.key, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
     };
 
@@ -154,6 +162,14 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
       emit("keyup", { keyCode: e.key });
     };
 
+    // ALT+TAB FIX: receive intercepted system shortcuts from main process
+    const onGlobalKey = (_, keyData) => {
+      if (!controlRef.current) return;
+      emit("keydown", keyData);
+    };
+    ipcRenderer.on("global-keydown", onGlobalKey);
+
+    // 60fps mousemove
     const interval = setInterval(() => {
       if (!controlRef.current || !mousePosRef.current) return;
       const socket   = socketRef.current;
@@ -163,7 +179,7 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
         socket.emit("mousemove", { userId: uid, remoteId, event: mousePosRef.current });
         mousePosRef.current = null;
       }
-    }, 33);
+    }, 16);
 
     video.addEventListener("mousemove", onMouseMove);
     video.addEventListener("mousedown", onMouseDown);
@@ -175,6 +191,7 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
 
     return () => {
       clearInterval(interval);
+      ipcRenderer.removeListener("global-keydown", onGlobalKey);
       video.removeEventListener("mousemove", onMouseMove);
       video.removeEventListener("mousedown", onMouseDown);
       video.removeEventListener("mouseup",   onMouseUp);
@@ -183,21 +200,21 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
       window.removeEventListener("keydown",  onKeyDown);
       window.removeEventListener("keyup",    onKeyUp);
     };
-  }, []); // empty — all live values via refs
+  }, []);
 
   const toggleControl = () => {
     const next = !controlRef.current;
     controlRef.current = next;
     setControlEnabled(next);
-    if (videoRef.current) videoRef.current.style.cursor = next ? "crosshair" : "default";
-    console.log("🎮 Control:", next ? "ON" : "OFF",
-      "| remoteId:", remoteIdRef.current,
-      "| userId:", userIdRef.current,
-      "| socket:", socketRef.current?.connected);
+    // Hide viewer's own cursor when control is active — less confusing
+    if (videoRef.current) videoRef.current.style.cursor = next ? "none" : "default";
+    // Tell main process to capture/release Alt+Tab and other system shortcuts
+    ipcRenderer.send("set-global-capture", next);
   };
 
   const handleDisconnect = () => {
     if (!window.confirm("End this session?")) return;
+    ipcRenderer.send("set-global-capture", false); // release shortcuts on disconnect
     const rid = remoteIdRef?.current;
     if (socketRef.current && rid) socketRef.current.emit("remotedisconnected", { remoteId: rid });
     if (callRef.current) { callRef.current.close(); callRef.current = null; }
@@ -249,7 +266,6 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
               </span>
             )}
           </div>
-
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={toggleMute} style={btn(muted ? "#4b5563" : "#0369a1", false)}>
               {muted
@@ -258,21 +274,18 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
               }
               {muted ? "Unmute" : "Mute"}
             </button>
-
             <button onClick={toggleControl} style={btn(controlEnabled ? "#b91c1c" : "#7c3aed", controlEnabled)}>
               <svg style={{width:15,height:15}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 6-5 2zm0 0l5 5"/>
               </svg>
               {controlEnabled ? "Release Control" : "Request Control"}
             </button>
-
             <button onClick={() => dispatch(setShowSessionDialog(true))} style={btn("#0284c7", false)}>
               <svg style={{width:15,height:15}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
               </svg>
               Session Info
             </button>
-
             <button onClick={handleDisconnect} style={btn("#dc2626", false)}>
               <svg style={{width:15,height:15}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
