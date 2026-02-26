@@ -75,16 +75,17 @@ const App = () => {
       if (callRef.current) { callRef.current.close(); callRef.current = null; }
     });
 
-    socket.on("mousemove", (e) => ipcRenderer.send("mousemove", e));
-    socket.on("mousedown", (e) => ipcRenderer.send("mousedown", e));
-    socket.on("mouseup",   (e) => ipcRenderer.send("mouseup",   e));
-    socket.on("click",     (e) => ipcRenderer.send("click",     e));
-    socket.on("dblclick",  (e) => ipcRenderer.send("dblclick",  e));
-    socket.on("scroll",    (e) => ipcRenderer.send("scroll",    e));
-    socket.on("keydown",   (e) => ipcRenderer.send("keydown",   e));
-    socket.on("keyup",     (e) => ipcRenderer.send("keyup",     e));
-    // When viewer enables control, they send stream resolution so host can scale correctly
-    socket.on("stream-resolution", (e) => ipcRenderer.send("stream-resolution", e));
+    // Remote control events from viewer → forward to electron main process → nut-js
+    // NOTE: no "click" event — we use only mousedown+mouseup to avoid double-action bug
+    socket.on("mousemove",        (e) => ipcRenderer.send("mousemove",        e));
+    socket.on("mousedown",        (e) => ipcRenderer.send("mousedown",        e));
+    socket.on("mouseup",          (e) => ipcRenderer.send("mouseup",          e));
+    socket.on("click",         (e) => ipcRenderer.send("click",         e));
+    socket.on("dblclick",         (e) => ipcRenderer.send("dblclick",         e));
+    socket.on("scroll",           (e) => ipcRenderer.send("scroll",           e));
+    socket.on("keydown",          (e) => ipcRenderer.send("keydown",          e));
+    socket.on("keyup",            (e) => ipcRenderer.send("keyup",            e));
+    socket.on("stream-resolution",(e) => ipcRenderer.send("stream-resolution",e));
 
     const peer = new Peer(uid, {
       host:   CONFIG.PEER_HOST,

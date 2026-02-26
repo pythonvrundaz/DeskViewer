@@ -1,54 +1,77 @@
 // server.js
-const express = require("express");
-const app = express();
-const server = require("http").createServer(app);
+const express  = require("express");
+const app      = express();
+const server   = require("http").createServer(app);
 const { ExpressPeerServer } = require("peer");
 const socketIo = require("socket.io");
+const multer   = require("multer");
+const path     = require("path");
+const fs       = require("fs");
 
 app.set("trust proxy", 1);
+app.use((req, res, next) => { res.setHeader("ngrok-skip-browser-warning", "true"); next(); });
+app.use(express.json());
 
-// Required: ngrok blocks requests without the ngrok-skip-browser-warning header
-// This middleware adds it to all responses
-app.use((req, res, next) => {
-  res.setHeader("ngrok-skip-browser-warning", "true");
-  next();
+// ── File upload storage ───────────────────────────────────────────────────────
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_, __, cb) => cb(null, uploadDir),
+  filename:    (_, file, cb) => cb(null, Date.now() + "_" + Buffer.from(file.originalname, "latin1").toString("utf8")),
+});
+const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } }); // 25 MB limit
+
+app.use("/uploads", express.static(uploadDir));
+
+// POST /upload  →  { url, name, size, type }
+app.post("/upload", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file" });
+  res.json({
+    url:  "/uploads/" + req.file.filename,
+    name: req.file.originalname,
+    size: req.file.size,
+    type: req.file.mimetype,
+  });
 });
 
+// ── PeerJS ────────────────────────────────────────────────────────────────────
 const peerServer = ExpressPeerServer(server, { debug: true, proxied: true });
 app.use("/peerjs", peerServer);
+peerServer.on("connection",  (c) => console.log("PeerJS connected:",    c.getId()));
+peerServer.on("disconnect",  (c) => console.log("PeerJS disconnected:", c.getId()));
 
-peerServer.on("connection", (c) => console.log("PeerJS connected:", c.getId()));
-peerServer.on("disconnect", (c) => console.log("PeerJS disconnected:", c.getId()));
-
+// ── Socket.IO ─────────────────────────────────────────────────────────────────
 const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
-  // Allow both — ngrok sometimes downgrades websocket to polling
-  transports: ["websocket", "polling"],
-  allowEIO3: true,  // backwards compatibility
+  cors: { origin: "*", methods: ["GET","POST"] },
+  transports: ["websocket","polling"],
+  allowEIO3: true,
 });
 
 io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
 
-  socket.on("join",               (room)               => { console.log("Joined:", room); socket.join(room); });
-  socket.on("remotedisconnected", ({ remoteId })        => io.to("User" + remoteId).emit("remotedisconnected"));
-  socket.on("callrejected",       ({ remoteId })        => io.to("User" + remoteId).emit("callrejected"));
+  socket.on("join",               (room)          => { socket.join(room); console.log("Joined:", room); });
+  socket.on("remotedisconnected", ({ remoteId })  => io.to("User"+remoteId).emit("remotedisconnected"));
+  socket.on("callrejected",       ({ remoteId })  => io.to("User"+remoteId).emit("callrejected"));
 
-  socket.on("mousemove", ({ remoteId, event }) => io.to("User" + remoteId).emit("mousemove", event));
-  socket.on("mousedown", ({ remoteId, event }) => io.to("User" + remoteId).emit("mousedown", event));
-  socket.on("mouseup",   ({ remoteId, event }) => io.to("User" + remoteId).emit("mouseup",   event));
-  socket.on("click",     ({ remoteId, event }) => io.to("User" + remoteId).emit("click",     event));
-  socket.on("dblclick",  ({ remoteId, event }) => io.to("User" + remoteId).emit("dblclick",  event));
-  socket.on("scroll",    ({ remoteId, event }) => io.to("User" + remoteId).emit("scroll",    event));
-  socket.on("keydown",   ({ remoteId, event }) => io.to("User" + remoteId).emit("keydown",   event));
-  socket.on("keyup",     ({ remoteId, event }) => io.to("User" + remoteId).emit("keyup",     event));
+  // Remote control
+  socket.on("mousemove",         ({ remoteId, event }) => io.to("User"+remoteId).emit("mousemove",         event));
+  socket.on("mousedown",         ({ remoteId, event }) => io.to("User"+remoteId).emit("mousedown",         event));
+  socket.on("mouseup",           ({ remoteId, event }) => io.to("User"+remoteId).emit("mouseup",           event));
+  socket.on("dblclick",          ({ remoteId, event }) => io.to("User"+remoteId).emit("dblclick",          event));
+  socket.on("scroll",            ({ remoteId, event }) => io.to("User"+remoteId).emit("scroll",            event));
+  socket.on("keydown",           ({ remoteId, event }) => io.to("User"+remoteId).emit("keydown",           event));
+  socket.on("keyup",             ({ remoteId, event }) => io.to("User"+remoteId).emit("keyup",             event));
+  socket.on("stream-resolution", ({ remoteId, event }) => io.to("User"+remoteId).emit("stream-resolution", event));
+  socket.on("requestcontrol",    ({ userId, remoteId }) => io.to("User"+remoteId).emit("controlrequested", { from: userId }));
+  socket.on("releasecontrol",    ({ userId, remoteId }) => io.to("User"+remoteId).emit("controlreleased",  { from: userId }));
 
-  socket.on("stream-resolution", ({ remoteId, event }) => io.to("User" + remoteId).emit("stream-resolution", event));
-  socket.on("requestcontrol", ({ userId, remoteId }) => io.to("User" + remoteId).emit("controlrequested", { from: userId }));
-  socket.on("releasecontrol", ({ userId, remoteId }) => io.to("User" + remoteId).emit("controlreleased",  { from: userId }));
+  // ── Chat ─────────────────────────────────────────────────────────────────
+  // msg shape: { id, from, fromId, text?, file?: { url, name, size, type }, ts }
+  socket.on("chat-message", ({ remoteId, msg }) => {
+    io.to("User"+remoteId).emit("chat-message", msg);
+  });
 
   socket.on("disconnect", () => console.log("Socket disconnected:", socket.id));
 });
