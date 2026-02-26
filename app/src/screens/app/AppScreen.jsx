@@ -364,7 +364,6 @@
 // };
 
 // export default AppScreen;
-
 // AppScreen.jsx
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useDispatch, useSelector } from "react-redux";
@@ -699,7 +698,8 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     setControlEnabled(next);
     if (next) {
       dispatch(setShowSessionDialog(false));
-      setShowToolbar(false);
+      // Keep toolbar visible — user needs access to chat, mute, disconnect while controlling
+      setShowToolbar(true);
       clearTimeout(toolbarTimerRef.current);
       if (videoRef.current) videoRef.current.style.cursor = "none";
       sendResolution();
@@ -743,7 +743,7 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     </button>
   );
 
-  const toolbarVisible = showToolbar && !controlEnabled;
+  const toolbarVisible = showToolbar; // always show toolbar, even during control
 
   // ── Chat message bubble ────────────────────────────────────────────────────
   const Bubble = ({ msg }) => {
@@ -814,9 +814,9 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
             }
             {muted?"Unmute":"Mute"}
           </button>
-          <button onClick={toggleControl} style={tbtn("#7c3aed")}>
+          <button onClick={toggleControl} style={tbtn(controlEnabled ? "#dc2626" : "#7c3aed")}>
             <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 6-5 2zm0 0l5 5"/></svg>
-            Request Control
+            {controlEnabled ? "Release" : "Request Control"}
           </button>
           {ibtn("Chat", toggleChat,
             <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -867,21 +867,16 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
             </div>
           )}
 
-          {/* Control active bar */}
+          {/* Control active indicator — thin bar at bottom of toolbar area */}
           {controlEnabled && videoPlaying && (
             <div style={{
               position:"absolute", top:0, left:0, right:0, zIndex:6,
-              display:"flex", alignItems:"center", justifyContent:"space-between",
-              padding:"4px 10px",
-              background:"linear-gradient(to bottom, rgba(120,0,0,0.92), transparent)",
+              padding:"2px 10px",
+              background:"rgba(120,0,0,0.75)",
               pointerEvents:"none",
+              display:"flex", alignItems:"center", gap:6,
             }}>
-              <span style={{ color:"#fca5a5", fontSize:11, fontWeight:700 }}>● CONTROL ACTIVE · Esc to release</span>
-              <button onClick={toggleControl} style={{
-                pointerEvents:"auto", background:"rgba(185,28,28,0.95)",
-                border:"1px solid rgba(255,80,80,0.4)", borderRadius:6,
-                padding:"3px 14px", color:"#fff", fontSize:11, fontWeight:700, cursor:"pointer",
-              }}>Release</button>
+              <span style={{ color:"#fca5a5", fontSize:10, fontWeight:700 }}>● CONTROL ACTIVE · Esc to release</span>
             </div>
           )}
         </div>
