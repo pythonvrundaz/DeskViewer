@@ -80,7 +80,6 @@ const App = () => {
     socket.on("mousemove",        (e) => ipcRenderer.send("mousemove",        e));
     socket.on("mousedown",        (e) => ipcRenderer.send("mousedown",        e));
     socket.on("mouseup",          (e) => ipcRenderer.send("mouseup",          e));
-    socket.on("click",         (e) => ipcRenderer.send("click",         e));
     socket.on("dblclick",         (e) => ipcRenderer.send("dblclick",         e));
     socket.on("scroll",           (e) => ipcRenderer.send("scroll",           e));
     socket.on("keydown",          (e) => ipcRenderer.send("keydown",          e));
@@ -125,6 +124,8 @@ const App = () => {
     remoteStreamRef.current = null;
     remoteIdRef.current = "";
     dispatch(setShowSessionDialog(false));
+    // Tell electron: session ended → minimize is allowed again
+    ipcRenderer.send("session-ended");
   }, []);
 
   const acceptCall = useCallback(async () => {
@@ -178,6 +179,9 @@ const App = () => {
       dispatch(setSessionMode(0));
       dispatch(setSessionStartTime(new Date()));
       dispatch(setShowSessionDialog(true));
+      // Tell electron: hosting session is now active → block window minimize
+      // so viewer's remote control clicks on our minimize button don't kill the stream
+      ipcRenderer.send("session-started");
       setTimeout(() => ipcRenderer.invoke("RESTORE_WIN"), 1000);
       call.on("close", resetSession);
       call.on("error", (e) => console.error("Host call error:", e));
@@ -244,6 +248,8 @@ const App = () => {
       <ConnectionScreen
         myId={myId}
         socketRef={socketRef}
+        remoteIdRef={remoteIdRef}
+        userIdRef={userIdRef}
         incomingCall={incomingCall}
         incomingCallerId={incomingCallerId}
         acceptCall={acceptCall}
