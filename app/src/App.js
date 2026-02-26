@@ -172,20 +172,25 @@ const App = () => {
       try   { stream = await tryCapture(true);  }
       catch { stream = await tryCapture(false); }
 
-      // Mic track enabled=TRUE so WebRTC SDP negotiates a proper sendrecv audio channel
-      const micStream = await getMicStream();
-      const micTrack  = micStream.getAudioTracks()[0];
-      if (micTrack) {
-        stream.addTrack(micTrack);
-        localMicStreamRef.current = micStream;
-        localMicTrackRef.current  = micTrack;
-        console.log("🎤 Host mic in stream, enabled=", micTrack.enabled);
-      }
+      // Build a COMBINED stream so all tracks are in the SDP from the start.
+      // stream.addTrack() after call.answer() does NOT update the SDP — tracks
+      // added post-answer are invisible to the remote peer.
+      // Solution: create a new MediaStream with ALL tracks, then call answer().
+      const micStream  = await getMicStream();
+      const micTrack   = micStream.getAudioTracks()[0];
 
-      // answer() with mic enabled → SDP negotiates audio sendrecv
-      call.answer(stream);
+      const combined   = new MediaStream();
+      stream.getTracks().forEach(t => combined.addTrack(t));   // screen video + desktop audio
+      if (micTrack) combined.addTrack(micTrack);               // mic audio
 
-      // NOW mute mic — after call object created, negotiation is already done
+      localMicStreamRef.current = micStream;
+      localMicTrackRef.current  = micTrack ?? null;
+      console.log("🎤 Combined stream tracks:", combined.getTracks().map(t => `${t.kind} label=${t.label} enabled=${t.enabled}`));
+
+      // answer() with all tracks present → SDP negotiates ALL audio channels
+      call.answer(combined);
+
+      // Mute mic immediately after answer() — SDP is already committed with mic channel open
       if (micTrack) { micTrack.enabled = false; console.log("🔇 Host mic muted (post-answer)"); }
 
       callRef.current     = call;
