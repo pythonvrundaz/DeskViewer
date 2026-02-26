@@ -172,6 +172,12 @@ const App = () => {
       try   { stream = await tryCapture(true);  }
       catch { stream = await tryCapture(false); }
 
+      // Add host mic so viewer can hear the host speak
+      try {
+        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        micStream.getAudioTracks().forEach(t => stream.addTrack(t));
+      } catch(e) { console.warn("Host mic unavailable:", e.message); }
+
       call.answer(stream);
       callRef.current     = call;
       remoteIdRef.current = call.peer;
