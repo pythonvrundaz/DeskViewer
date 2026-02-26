@@ -366,7 +366,6 @@
 // export default AppScreen;
 
 
-
 // AppScreen.jsx
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useDispatch, useSelector } from "react-redux";
@@ -384,89 +383,77 @@ const fmt = (bytes) => {
 const isImage = (t="") => t.startsWith("image/");
 const msgId   = () => Math.random().toString(36).slice(2);
 
-// Common emoji list
-const EMOJIS = ["😀","😂","😍","🥰","😎","😭","😅","🤔","😮","😡","👍","👎","❤️","🔥","✅","❌","🎉","🙏","💯","👀","😂","🤣","😊","😇","🥳","😴","🤯","🤝","💪","🎊","👋","✌️","🫡","💬","📎","🖼️","🚀","⭐","💡","🔔"];
+const EMOJIS = [
+  "😀","😂","😍","🥰","😎","😭","😅","🤔","😮","😡",
+  "👍","👎","❤️","🔥","✅","❌","🎉","🙏","💯","👀",
+  "🤣","😊","😇","🥳","😴","🤯","🤝","💪","🎊","👋",
+  "✌️","🫡","💬","📎","🖼️","🚀","⭐","💡","🔔","😆",
+];
 
-const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteIdRef, userIdRef, onDisconnect, onEndSession }) => {
-  const videoRef      = useRef(null);
-  const dispatch      = useDispatch();
-  const mousePosRef   = useRef(null);
-  const controlRef    = useRef(false);
-  const localMicRef   = useRef(null);  // local mic MediaStream
-  const micTrackRef   = useRef(null);  // actual audio track (to mute/unmute)
+// ─────────────────────────────────────────────────────────────────────────────
+const AppScreen = ({
+  remoteStream, remoteStreamRef, socketRef, callRef,
+  remoteIdRef, userIdRef, localMicTrackRef,
+  onDisconnect, onEndSession,
+}) => {
+  const videoRef    = useRef(null);
+  const dispatch    = useDispatch();
+  const mousePosRef = useRef(null);
+  const controlRef  = useRef(false);
 
   const showSessionDialog = useSelector((s) => s.connection.showSessionDialog);
 
+  // ── state ──────────────────────────────────────────────────────────────────
   const [videoPlaying,   setVideoPlaying]   = useState(false);
   const [controlEnabled, setControlEnabled] = useState(false);
-  const [muted,          setMuted]          = useState(false);   // mic mute
+  // muted = YOUR mic is muted (not sending audio to remote)
+  // default true because mic starts muted in App.js getMicStream()
+  const [muted,          setMuted]          = useState(true);
   const [showToolbar,    setShowToolbar]     = useState(true);
   const [hostMinimized,  setHostMinimized]   = useState(false);
 
   // chat
-  const [showChat,     setShowChat]     = useState(false);
-  const [messages,     setMessages]     = useState([]);
-  const [chatInput,    setChatInput]    = useState("");
-  const [uploading,    setUploading]    = useState(false);
-  const [unread,       setUnread]       = useState(0);
-  const [showEmoji,    setShowEmoji]    = useState(false);
-  const chatEndRef    = useRef(null);
-  const fileInputRef  = useRef(null);
-  const textareaRef   = useRef(null);
+  const [showChat,    setShowChat]    = useState(false);
+  const [messages,    setMessages]    = useState([]);
+  const [chatInput,   setChatInput]   = useState("");
+  const [uploading,   setUploading]   = useState(false);
+  const [unread,      setUnread]      = useState(0);
+  const [showEmoji,   setShowEmoji]   = useState(false);
+  const chatEndRef   = useRef(null);
+  const fileInputRef = useRef(null);
+  const textareaRef  = useRef(null);
   const toolbarTimerRef = useRef(null);
-
-  // ── Start mic and add track to existing call ───────────────────────────────
-  const startMic = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      localMicRef.current = stream;
-      const track = stream.getAudioTracks()[0];
-      micTrackRef.current = track;
-
-      // Add mic track to the existing PeerJS call so remote hears us
-      const call = callRef.current;
-      if (call?.peerConnection) {
-        call.peerConnection.getSenders().forEach(s => {
-          // replace empty audio sender if exists, else add
-        });
-        try { call.peerConnection.addTrack(track, stream); } catch(e) {}
-      }
-      console.log("🎤 Mic started");
-    } catch(e) {
-      console.warn("Mic access denied:", e.message);
-    }
-  }, [callRef]);
 
   // ── stream attach ──────────────────────────────────────────────────────────
   const attachStream = useCallback((stream) => {
     if (!stream || !videoRef.current) return;
     const video = videoRef.current;
     video.srcObject = stream;
-    video.muted = false;  // hear remote audio
+    video.muted = false;   // MUST be false — we want to hear remote audio
+    video.volume = 1.0;
     const tryPlay = () =>
       video.play()
-        .then(() => {
-          setVideoPlaying(true);
-          ipcRenderer.send("maximize-for-viewing");
-          startMic(); // start mic as soon as stream is playing
-        })
-        .catch(() => setTimeout(tryPlay, 600));
+        .then(() => { setVideoPlaying(true); ipcRenderer.send("maximize-for-viewing"); })
+        .catch((e) => { console.warn("play() failed:", e.message); setTimeout(tryPlay, 600); });
     tryPlay();
-  }, [startMic]);
+  }, []);
 
   useEffect(() => { if (remoteStream)             attachStream(remoteStream);            }, [remoteStream]);
   useEffect(() => { if (remoteStreamRef?.current)  attachStream(remoteStreamRef.current); }, []);
 
   // ── Mute / Unmute YOUR mic ─────────────────────────────────────────────────
+  // localMicTrackRef.current is the AudioTrack from getUserMedia (set in App.js)
+  // track.enabled = false → silence sent to remote
+  // track.enabled = true  → your voice sent to remote
   const toggleMute = () => {
-    const track = micTrackRef.current;
-    if (track) {
-      track.enabled = !track.enabled;   // false = muted (stops sending audio)
-      setMuted(!track.enabled);
-    } else {
-      // Mic not started yet — try again
-      startMic().then(() => setMuted(false));
+    const track = localMicTrackRef?.current;
+    if (!track) {
+      console.warn("No mic track available");
+      return;
     }
+    track.enabled = !track.enabled;
+    setMuted(!track.enabled);
+    console.log(`🎤 Mic ${track.enabled ? "UNMUTED" : "MUTED"}`);
   };
 
   // ── toolbar auto-hide ──────────────────────────────────────────────────────
@@ -519,10 +506,7 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     };
   }, [scheduleHide]);
 
-  // cleanup mic on unmount
-  useEffect(() => () => { localMicRef.current?.getTracks().forEach(t => t.stop()); }, []);
-
-  // ── CHAT: receive ──────────────────────────────────────────────────────────
+  // ── chat: receive ──────────────────────────────────────────────────────────
   useEffect(() => {
     const socket = socketRef.current;
     if (!socket) return;
@@ -540,7 +524,7 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
 
   const toggleChat = () => { setShowEmoji(false); setShowChat(v => { if (!v) setUnread(0); return !v; }); };
 
-  // ── CHAT: send text ────────────────────────────────────────────────────────
+  // ── chat: send text ────────────────────────────────────────────────────────
   const sendText = () => {
     const text = chatInput.trim();
     if (!text) return;
@@ -555,18 +539,17 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     setShowEmoji(false);
   };
 
-  // insert emoji at cursor position
   const insertEmoji = (emoji) => {
     const el = textareaRef.current;
     if (!el) { setChatInput(v => v + emoji); return; }
-    const start = el.selectionStart;
-    const end   = el.selectionEnd;
+    const start = el.selectionStart ?? chatInput.length;
+    const end   = el.selectionEnd   ?? chatInput.length;
     const next  = chatInput.slice(0, start) + emoji + chatInput.slice(end);
     setChatInput(next);
     setTimeout(() => { el.selectionStart = el.selectionEnd = start + emoji.length; el.focus(); }, 0);
   };
 
-  // ── CHAT: send file ────────────────────────────────────────────────────────
+  // ── chat: send file ────────────────────────────────────────────────────────
   const sendFile = async (file) => {
     if (!file) return;
     const socket   = socketRef.current;
@@ -591,14 +574,14 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
   const getCoords = (e) => {
     const video = videoRef.current;
     if (!video) return { x:0, y:0 };
-    const rect  = video.getBoundingClientRect();
-    const sw    = video.videoWidth  || 1280;
-    const sh    = video.videoHeight || 720;
-    const sa    = sw / sh;
-    const ea    = rect.width / rect.height;
+    const rect = video.getBoundingClientRect();
+    const sw   = video.videoWidth  || 1280;
+    const sh   = video.videoHeight || 720;
+    const sa   = sw / sh;
+    const ea   = rect.width / rect.height;
     let rW, rH, oX, oY;
-    if (sa > ea) { rW = rect.width; rH = rect.width/sa; oX = 0; oY = (rect.height-rH)/2; }
-    else         { rH = rect.height; rW = rect.height*sa; oX = (rect.width-rW)/2; oY = 0; }
+    if (sa > ea) { rW = rect.width;  rH = rect.width/sa;   oX = 0;                    oY = (rect.height-rH)/2; }
+    else         { rH = rect.height; rW = rect.height*sa;  oX = (rect.width-rW)/2;    oY = 0; }
     const relX = Math.max(0, Math.min(e.clientX - rect.left - oX, rW));
     const relY = Math.max(0, Math.min(e.clientY - rect.top  - oY, rH));
     return { x: Math.round((relX/rW)*sw), y: Math.round((relY/rH)*sh) };
@@ -628,13 +611,9 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
       socket.emit(name, { userId:uid, remoteId, event:data });
     };
 
-    const onMouseDown = (e) => {
-      if (!controlRef.current) return;
-      e.preventDefault(); e.stopPropagation();
-      emit("mousedown", { button:e.button, ...getCoords(e) });
-    };
-    const onMouseUp  = (e) => { if (!controlRef.current) return; emit("mouseup",  { button:e.button, ...getCoords(e) }); };
-    const onDblClick = (e) => { if (!controlRef.current) return; e.preventDefault(); emit("dblclick", getCoords(e)); };
+    const onMouseDown = (e) => { if (!controlRef.current) return; e.preventDefault(); e.stopPropagation(); emit("mousedown", { button:e.button, ...getCoords(e) }); };
+    const onMouseUp   = (e) => { if (!controlRef.current) return; emit("mouseup",  { button:e.button, ...getCoords(e) }); };
+    const onDblClick  = (e) => { if (!controlRef.current) return; e.preventDefault(); emit("dblclick", getCoords(e)); };
 
     let scrollAccum = 0;
     const onWheel = (e) => {
@@ -655,16 +634,12 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     const onKeyDown = (e) => {
       if (!controlRef.current) return;
       if (e.ctrlKey && e.shiftKey && e.key === "I") return;
-      // Don't forward keys when typing in chat
       const tag = document.activeElement?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea") return;
       if (e.key === "Escape") {
-        controlRef.current = false;
-        setControlEnabled(false);
-        setShowToolbar(true);
-        video.style.cursor = "default";
-        ipcRenderer.send("set-global-capture", false);
-        return;
+        controlRef.current = false; setControlEnabled(false);
+        setShowToolbar(true); video.style.cursor = "default";
+        ipcRenderer.send("set-global-capture", false); return;
       }
       e.preventDefault();
       emit("keydown", { keyCode:e.key, ctrl:e.ctrlKey, shift:e.shiftKey, alt:e.altKey, meta:e.metaKey });
@@ -732,7 +707,6 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
   const handleDisconnect = () => {
     if (!window.confirm("End this session?")) return;
     ipcRenderer.send("set-global-capture", false);
-    localMicRef.current?.getTracks().forEach(t => t.stop());
     const rid = remoteIdRef?.current;
     if (socketRef.current && rid) socketRef.current.emit("remotedisconnected", { remoteId:rid });
     if (callRef.current) { callRef.current.close(); callRef.current = null; }
@@ -768,25 +742,22 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     return (
       <div style={{ display:"flex", justifyContent: mine?"flex-end":"flex-start", marginBottom:6 }}>
         <div style={{
-          maxWidth:"78%",
+          maxWidth:"78%", boxShadow:"0 1px 4px rgba(0,0,0,0.3)",
           borderRadius: mine?"12px 12px 2px 12px":"12px 12px 12px 2px",
           background: mine?"#7c3aed":"#1f2937",
           padding: msg.file?"6px":"8px 12px",
-          boxShadow:"0 1px 4px rgba(0,0,0,0.3)",
         }}>
           {msg.text && <p style={{ margin:0, color:"#fff", fontSize:13, wordBreak:"break-word", whiteSpace:"pre-wrap" }}>{msg.text}</p>}
           {msg.file && isImage(msg.file.type) && (
             <a href={base+msg.file.url} target="_blank" rel="noreferrer">
-              <img src={base+msg.file.url} alt={msg.file.name}
-                style={{ maxWidth:220, maxHeight:160, borderRadius:8, display:"block" }} />
+              <img src={base+msg.file.url} alt={msg.file.name} style={{ maxWidth:220, maxHeight:160, borderRadius:8, display:"block" }}/>
             </a>
           )}
           {msg.file && !isImage(msg.file.type) && (
             <a href={base+msg.file.url} target="_blank" rel="noreferrer"
               style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", textDecoration:"none" }}>
               <svg style={{width:22,height:22,flexShrink:0,color:"#93c5fd"}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
               </svg>
               <div>
                 <div style={{ color:"#e5e7eb", fontSize:12, fontWeight:600, wordBreak:"break-all" }}>{msg.file.name}</div>
@@ -794,8 +765,7 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
               </div>
             </a>
           )}
-          <div style={{ color: mine?"rgba(255,255,255,0.45)":"#6b7280", fontSize:10, marginTop:3,
-            textAlign:"right", paddingRight: msg.file?8:0 }}>
+          <div style={{ color: mine?"rgba(255,255,255,0.45)":"#6b7280", fontSize:10, marginTop:3, textAlign:"right", paddingRight: msg.file?8:0 }}>
             {new Date(msg.ts).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}
           </div>
         </div>
@@ -803,34 +773,27 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     );
   };
 
-  const toolbarVisible = showToolbar;
-
   // ── render ─────────────────────────────────────────────────────────────────
   return (
     <div style={{ width:"100vw", height:"100vh", background:"#0a0a0a", display:"flex", flexDirection:"column", overflow:"hidden" }}>
 
-      {/* ── TOOLBAR ── */}
+      {/* TOOLBAR */}
       <div style={{
         flexShrink:0, overflow:"hidden",
-        height: toolbarVisible ? 54 : 0,
+        height: showToolbar ? 54 : 0,
         transition:"height 0.2s ease",
         display:"flex", alignItems:"center", justifyContent:"space-between",
-        padding: toolbarVisible ? "0 14px" : 0,
+        padding: showToolbar ? "0 14px" : 0,
         background:"rgba(13,13,18,0.98)",
-        borderBottom: toolbarVisible ? "1px solid rgba(255,255,255,0.07)" : "none",
+        borderBottom: showToolbar ? "1px solid rgba(255,255,255,0.07)" : "none",
       }}>
-
-        {/* LEFT: status dot + remote ID + control indicator inline */}
+        {/* LEFT: status + remote ID + control badge inline */}
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
           <div style={{ width:7, height:7, borderRadius:"50%", background:"#4ade80", boxShadow:"0 0 6px #4ade80" }}/>
           <span style={{ color:"#d1d5db", fontSize:13, fontWeight:500 }}>{remoteIdRef.current}</span>
-          {/* ● CONTROL ACTIVE inline with remote ID */}
           {controlEnabled && (
-            <span style={{
-              display:"flex", alignItems:"center", gap:4,
-              background:"rgba(185,28,28,0.85)", borderRadius:5,
-              padding:"2px 8px", fontSize:10, fontWeight:700, color:"#fca5a5",
-            }}>
+            <span style={{ display:"flex", alignItems:"center", gap:4, background:"rgba(185,28,28,0.85)",
+              borderRadius:5, padding:"2px 8px", fontSize:10, fontWeight:700, color:"#fca5a5" }}>
               ● CONTROL ACTIVE · Esc to release
             </span>
           )}
@@ -838,24 +801,21 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
 
         {/* RIGHT: buttons */}
         <div style={{ display:"flex", gap:6, alignItems:"center" }}>
-
           {ibtn("Minimize", () => ipcRenderer.send("minimize-to-taskbar"),
             <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M20 12H4"/>
             </svg>
           )}
 
-          {/* Mute mic button */}
-          <button onClick={toggleMute} style={tbtn(muted ? "#374151" : "#0369a1")} title={muted ? "Unmute mic" : "Mute mic"}>
+          {/* Mic mute button — muted by default */}
+          <button onClick={toggleMute} style={tbtn(muted ? "#374151" : "#059669")} title={muted ? "Click to unmute mic" : "Click to mute mic"}>
             {muted ? (
-              // mic off icon
               <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
                 <line x1="3" y1="3" x2="21" y2="21" strokeWidth={2} strokeLinecap="round"/>
               </svg>
             ) : (
-              // mic on icon
               <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
@@ -895,8 +855,8 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
         </div>
       </div>
 
-      {/* ── MAIN AREA ── */}
-      <div style={{ flex:1, display:"flex", overflow:"hidden", position:"relative" }}>
+      {/* MAIN */}
+      <div style={{ flex:1, display:"flex", overflow:"hidden" }}>
 
         {/* VIDEO */}
         <div style={{ flex:1, position:"relative", background:"#000", overflow:"hidden" }}>
@@ -906,7 +866,7 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
                 <circle style={{opacity:0.25}} cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                 <path style={{opacity:0.75}} fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
               </svg>
-              <p style={{ color:"#fff", fontSize:17, fontWeight:600, margin:0 }}>Connecting to remote screen...</p>
+              <p style={{ color:"#fff", fontSize:17, fontWeight:600, margin:0 }}>Connecting...</p>
               <p style={{ color:"#9ca3af", fontSize:13, marginTop:8 }}>Waiting for host to share</p>
               <button onClick={onDisconnect} style={{ marginTop:20, padding:"8px 22px", borderRadius:8, border:"1px solid #4b5563", background:"transparent", color:"#d1d5db", cursor:"pointer" }}>Cancel</button>
             </div>
@@ -927,14 +887,10 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
           )}
         </div>
 
-        {/* ── CHAT PANEL ── */}
+        {/* CHAT PANEL */}
         {showChat && (
-          <div style={{
-            width:300, display:"flex", flexDirection:"column",
-            background:"#111827", borderLeft:"1px solid rgba(255,255,255,0.07)",
-            flexShrink:0, position:"relative",
-          }}>
-            {/* header */}
+          <div style={{ width:300, display:"flex", flexDirection:"column", background:"#111827", borderLeft:"1px solid rgba(255,255,255,0.07)", flexShrink:0, position:"relative" }}>
+
             <div style={{ padding:"10px 14px", borderBottom:"1px solid rgba(255,255,255,0.07)", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
               <span style={{ color:"#e5e7eb", fontSize:13, fontWeight:600 }}>Chat</span>
               <button onClick={toggleChat} style={{ background:"none", border:"none", color:"#9ca3af", cursor:"pointer", padding:2 }}>
@@ -944,13 +900,11 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
               </button>
             </div>
 
-            {/* messages */}
             <div style={{ flex:1, overflowY:"auto", padding:"10px 10px 4px", display:"flex", flexDirection:"column" }}>
               {messages.length === 0 && (
                 <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", color:"#4b5563" }}>
                   <svg style={{width:36,height:36,marginBottom:8}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                      d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                   </svg>
                   <span style={{ fontSize:12 }}>No messages yet</span>
                 </div>
@@ -959,7 +913,6 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
               <div ref={chatEndRef} />
             </div>
 
-            {/* uploading */}
             {uploading && (
               <div style={{ padding:"4px 14px", color:"#60a5fa", fontSize:11, display:"flex", alignItems:"center", gap:6 }}>
                 <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none">
@@ -972,15 +925,10 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
 
             {/* emoji picker */}
             {showEmoji && (
-              <div style={{
-                position:"absolute", bottom:58, left:0, right:0,
-                background:"#1f2937", borderTop:"1px solid rgba(255,255,255,0.08)",
-                padding:"8px", display:"flex", flexWrap:"wrap", gap:2, maxHeight:140, overflowY:"auto",
-              }}>
+              <div style={{ position:"absolute", bottom:58, left:0, right:0, background:"#1f2937", borderTop:"1px solid rgba(255,255,255,0.08)", padding:"8px", display:"flex", flexWrap:"wrap", gap:2, maxHeight:150, overflowY:"auto", zIndex:10 }}>
                 {EMOJIS.map(e => (
                   <button key={e} onClick={() => insertEmoji(e)}
-                    style={{ background:"none", border:"none", fontSize:18, cursor:"pointer", padding:"2px 4px", borderRadius:4, lineHeight:1 }}
-                    title={e}>
+                    style={{ background:"none", border:"none", fontSize:18, cursor:"pointer", padding:"3px 4px", borderRadius:4, lineHeight:1 }}>
                     {e}
                   </button>
                 ))}
@@ -988,28 +936,22 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
             )}
 
             {/* input row */}
-            <div style={{ padding:"8px 10px", borderTop:"1px solid rgba(255,255,255,0.07)", display:"flex", gap:6, alignItems:"flex-end" }}>
-
-              {/* attach */}
+            <div style={{ padding:"8px 10px", borderTop:"1px solid rgba(255,255,255,0.07)", display:"flex", gap:5, alignItems:"flex-end" }}>
               <button onClick={() => fileInputRef.current?.click()} title="Attach file"
-                style={{ background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:7, padding:"7px 8px", color:"#9ca3af", cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center" }}>
+                style={{ background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:7, padding:"7px 8px", color:"#9ca3af", cursor:"pointer", flexShrink:0, display:"flex" }}>
                 <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
                 </svg>
               </button>
               <input ref={fileInputRef} type="file" style={{ display:"none" }}
                 onChange={(e) => { sendFile(e.target.files[0]); e.target.value=""; }} />
 
-              {/* emoji toggle */}
               <button onClick={() => setShowEmoji(v => !v)} title="Emoji"
-                style={{ background: showEmoji?"rgba(124,58,237,0.3)":"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:7, padding:"7px 8px", color:"#9ca3af", cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center", fontSize:13 }}>
+                style={{ background: showEmoji?"rgba(124,58,237,0.3)":"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:7, padding:"7px 8px", cursor:"pointer", flexShrink:0, fontSize:14 }}>
                 😊
               </button>
 
-              {/* text */}
-              <textarea ref={textareaRef}
-                value={chatInput}
+              <textarea ref={textareaRef} value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key==="Enter" && !e.shiftKey) { e.preventDefault(); sendText(); } }}
                 placeholder="Message… (Enter)"
@@ -1019,11 +961,10 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
                   outline:"none", fontFamily:"inherit", lineHeight:1.4, maxHeight:80, overflowY:"auto" }}
               />
 
-              {/* send */}
               <button onClick={sendText} disabled={!chatInput.trim()}
                 style={{ background:chatInput.trim()?"#7c3aed":"rgba(255,255,255,0.06)", border:"none", borderRadius:7,
                   padding:"7px 10px", color:"#fff", cursor:chatInput.trim()?"pointer":"default",
-                  flexShrink:0, display:"flex", alignItems:"center", transition:"background 0.15s" }}>
+                  flexShrink:0, display:"flex", transition:"background 0.15s" }}>
                 <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
                 </svg>

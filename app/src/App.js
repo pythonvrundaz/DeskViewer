@@ -14,15 +14,25 @@ import CONFIG from "./config";
 
 const { ipcRenderer } = window.require("electron");
 
-const createDummyStream = () => {
+// ── Get mic stream (muted by default until user unmutes) ─────────────────────
+// Returns a MediaStream with one silent-but-present audio track.
+// track.enabled = false → no audio sent. track.enabled = true → audio sent.
+const getMicStream = async () => {
   try {
-    const canvas = document.createElement("canvas");
-    canvas.width = 1280; canvas.height = 720;
-    canvas.getContext("2d").fillRect(0, 0, 1280, 720);
-    const videoTrack = canvas.captureStream(0).getVideoTracks()[0];
-    const audioTrack = new AudioContext().createMediaStreamDestination().stream.getAudioTracks()[0];
-    return new MediaStream([videoTrack, audioTrack]);
-  } catch (e) { return new MediaStream(); }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    // Default: muted. User must press Unmute to speak.
+    stream.getAudioTracks().forEach(t => { t.enabled = false; });
+    console.log("🎤 Mic acquired (muted by default)");
+    return stream;
+  } catch(e) {
+    console.warn("🎤 Mic unavailable:", e.message);
+    // Return a silent dummy audio track so WebRTC negotiation still includes audio
+    const ctx  = new AudioContext();
+    const dest = ctx.createMediaStreamDestination();
+    const track = dest.stream.getAudioTracks()[0];
+    if (track) track.enabled = false;
+    return dest.stream;
+  }
 };
 
 const App = () => {
@@ -35,16 +45,20 @@ const App = () => {
   const remoteIdRef     = useRef("");
   const userIdRef       = useRef("");
 
-  const [myId, setMyId]                         = useState("");
-  const [currentScreen, setCurrentScreen]       = useState("home");
-  const [remoteStream, setRemoteStream]         = useState(null);
-  const [sessionEnded, setSessionEnded]         = useState(false);
-  const [callRejected, setCallRejected]         = useState(false);
-  const [incomingCall, setIncomingCall]         = useState(null);
+  // Mic refs — shared between App.js (call setup) and child screens (mute button)
+  const localMicStreamRef = useRef(null);  // the full MediaStream from getUserMedia
+  const localMicTrackRef  = useRef(null);  // the AudioTrack — toggle .enabled to mute/unmute
+
+  const [myId,             setMyId]             = useState("");
+  const [currentScreen,    setCurrentScreen]    = useState("home");
+  const [remoteStream,     setRemoteStream]     = useState(null);
+  const [sessionEnded,     setSessionEnded]     = useState(false);
+  const [callRejected,     setCallRejected]     = useState(false);
+  const [incomingCall,     setIncomingCall]     = useState(null);
   const [incomingCallerId, setIncomingCallerId] = useState("");
-  const [sources, setSources]                   = useState([]);
-  const [showPicker, setShowPicker]             = useState(false);
-  const [pendingCall, setPendingCall]           = useState(null);
+  const [sources,          setSources]          = useState([]);
+  const [showPicker,       setShowPicker]       = useState(false);
+  const [pendingCall,      setPendingCall]      = useState(null);
 
   useEffect(() => {
     const uid = String(Math.floor(Math.random() * 9000000000) + 1000000000);
@@ -52,22 +66,16 @@ const App = () => {
     userIdRef.current = uid;
     dispatch(setUserConnectionId(uid));
 
-    // FIX for ngrok 400 error:
-    // 1. Use polling FIRST then upgrade to websocket (ngrok blocks direct WS upgrade)
-    // 2. Send ngrok-skip-browser-warning header (required by ngrok free tier)
     const socket = io(CONFIG.SOCKET_URL, {
       reconnectionDelay: 1000,
-      transports: ["polling", "websocket"],   // polling first! then upgrade
-      extraHeaders: {
-        "ngrok-skip-browser-warning": "true", // bypasses ngrok's browser warning page
-      },
+      transports: ["polling", "websocket"],
+      extraHeaders: { "ngrok-skip-browser-warning": "true" },
     });
     socketRef.current = socket;
 
-    socket.on("connect",    () => { console.log("🟢 Socket:", socket.id); socket.emit("join", "User" + uid); });
-    socket.on("disconnect", (r) => console.warn("🔴 Socket disconnected:", r));
-    socket.on("connect_error", (e) => console.error("🔴 Socket error:", e.message));
-
+    socket.on("connect",      () => { console.log("🟢 Socket:", socket.id); socket.emit("join", "User" + uid); });
+    socket.on("disconnect",   (r) => console.warn("🔴 Socket disconnected:", r));
+    socket.on("connect_error",(e) => console.error("🔴 Socket error:", e.message));
     socket.on("remotedisconnected", () => setSessionEnded(true));
     socket.on("callrejected", () => {
       setCallRejected(true);
@@ -75,8 +83,6 @@ const App = () => {
       if (callRef.current) { callRef.current.close(); callRef.current = null; }
     });
 
-    // Remote control events from viewer → forward to electron main process → nut-js
-    // NOTE: no "click" event — we use only mousedown+mouseup to avoid double-action bug
     socket.on("mousemove",        (e) => ipcRenderer.send("mousemove",        e));
     socket.on("mousedown",        (e) => ipcRenderer.send("mousedown",        e));
     socket.on("mouseup",          (e) => ipcRenderer.send("mouseup",          e));
@@ -87,19 +93,13 @@ const App = () => {
     socket.on("stream-resolution",(e) => ipcRenderer.send("stream-resolution",e));
 
     const peer = new Peer(uid, {
-      host:   CONFIG.PEER_HOST,
-      port:   CONFIG.PEER_PORT,
-      path:   CONFIG.PEER_PATH,
-      secure: CONFIG.PEER_SECURE,
-      debug:  2,
-      config: {
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-          { urls: "stun:stun2.l.google.com:19302" },
-          { urls: "stun:stun3.l.google.com:19302" },
-        ],
-      },
+      host: CONFIG.PEER_HOST, port: CONFIG.PEER_PORT,
+      path: CONFIG.PEER_PATH, secure: CONFIG.PEER_SECURE, debug: 2,
+      config: { iceServers: [
+        { urls: "stun:stun.l.google.com:19302"  },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+      ]},
     });
 
     peer.on("open",         (id)  => console.log("✅ PeerJS:", id));
@@ -109,13 +109,13 @@ const App = () => {
       if (err.type === "unavailable-id") window.location.reload();
     });
     peer.on("call", (call) => {
-      console.log("📞 Incoming call:", call.peer);
+      console.log("📞 Incoming call from:", call.peer);
       setIncomingCall(call);
       setIncomingCallerId(call.peer);
     });
 
     peerInstance.current = peer;
-    return () => { socket.disconnect(); peer.destroy(); };
+    return () => { socket.disconnect(); peer.destroy(); localMicStreamRef.current?.getTracks().forEach(t => t.stop()); };
   }, []);
 
   const resetSession = useCallback(() => {
@@ -124,8 +124,11 @@ const App = () => {
     remoteStreamRef.current = null;
     remoteIdRef.current = "";
     dispatch(setShowSessionDialog(false));
-    // Tell electron: session ended → minimize is allowed again
     ipcRenderer.send("session-ended");
+    // Stop mic track when session ends
+    localMicStreamRef.current?.getTracks().forEach(t => t.stop());
+    localMicStreamRef.current = null;
+    localMicTrackRef.current  = null;
   }, []);
 
   const acceptCall = useCallback(async () => {
@@ -147,24 +150,22 @@ const App = () => {
     socketRef.current?.emit("callrejected", { remoteId: callerId });
   }, [incomingCall, incomingCallerId]);
 
+  // ── HOST answers the call ─────────────────────────────────────────────────
+  // Stream = screen video + desktop audio (if available) + mic audio (muted by default)
   const onSourceSelected = useCallback(async (sourceId) => {
     setShowPicker(false);
     const call = pendingCall;
     if (!call) return;
 
     await ipcRenderer.invoke("MINIMIZE_WIN");
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 500));
 
     const tryCapture = (withAudio) => navigator.mediaDevices.getUserMedia({
       audio: withAudio ? { mandatory: { chromeMediaSource: "desktop" } } : false,
-      video: {
-        mandatory: {
-          chromeMediaSource: "desktop",
-          chromeMediaSourceId: sourceId,
-          minWidth: 1280, maxWidth: 1920,
-          minHeight: 720,  maxHeight: 1080,
-        },
-      },
+      video: { mandatory: {
+        chromeMediaSource: "desktop", chromeMediaSourceId: sourceId,
+        minWidth: 1280, maxWidth: 1920, minHeight: 720, maxHeight: 1080,
+      }},
     });
 
     try {
@@ -172,11 +173,15 @@ const App = () => {
       try   { stream = await tryCapture(true);  }
       catch { stream = await tryCapture(false); }
 
-      // Add host mic so viewer can hear the host speak
-      try {
-        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        micStream.getAudioTracks().forEach(t => stream.addTrack(t));
-      } catch(e) { console.warn("Host mic unavailable:", e.message); }
+      // Add mic track to stream — muted by default, host can unmute to speak
+      const micStream = await getMicStream();
+      const micTrack  = micStream.getAudioTracks()[0];
+      if (micTrack) {
+        stream.addTrack(micTrack);
+        localMicStreamRef.current = micStream;
+        localMicTrackRef.current  = micTrack;
+        console.log("🎤 Host mic added to stream (muted)");
+      }
 
       call.answer(stream);
       callRef.current     = call;
@@ -185,44 +190,63 @@ const App = () => {
       dispatch(setSessionMode(0));
       dispatch(setSessionStartTime(new Date()));
       dispatch(setShowSessionDialog(true));
-      // Tell electron: hosting session is now active → block window minimize
-      // so viewer's remote control clicks on our minimize button don't kill the stream
       ipcRenderer.send("session-started");
       setTimeout(() => ipcRenderer.invoke("RESTORE_WIN"), 1000);
       call.on("close", resetSession);
       call.on("error", (e) => console.error("Host call error:", e));
-    } catch (e) {
+    } catch(e) {
       ipcRenderer.invoke("RESTORE_WIN");
       alert("Screen capture failed: " + e.message);
       socketRef.current?.emit("callrejected", { remoteId: call.peer });
     }
   }, [pendingCall, resetSession]);
 
-  const startCall = useCallback((remoteId) => {
+  // ── VIEWER initiates call ─────────────────────────────────────────────────
+  // Viewer must include a real mic track in the initial offer stream.
+  // PeerJS uses the initial stream's tracks for SDP negotiation —
+  // if we send a dummy stream with no real audio, the host can't hear the viewer.
+  const startCall = useCallback(async (remoteId) => {
     const peer = peerInstance.current;
     if (!peer || peer.destroyed) { alert("Not connected to server yet."); return; }
 
     dispatch(setRemoteConnectionId(remoteId));
     remoteIdRef.current = remoteId;
 
-    const call = peer.call(String(remoteId), createDummyStream());
-    if (!call) { alert("Could not reach that peer. Are they online?"); return; }
+    // Build viewer's outgoing stream: silent video + real mic (muted by default)
+    const canvas = document.createElement("canvas");
+    canvas.width = 1; canvas.height = 1;
+    canvas.getContext("2d").fillRect(0, 0, 1, 1);
+    const videoTrack = canvas.captureStream(1).getVideoTracks()[0];
+
+    const micStream = await getMicStream();
+    const micTrack  = micStream.getAudioTracks()[0];
+    localMicStreamRef.current = micStream;
+    localMicTrackRef.current  = micTrack;
+
+    const outStream = new MediaStream();
+    outStream.addTrack(videoTrack);
+    if (micTrack) outStream.addTrack(micTrack);
+
+    console.log("📞 Calling with tracks:", outStream.getTracks().map(t => `${t.kind}(${t.enabled})`));
+
+    const call = peer.call(String(remoteId), outStream);
+    if (!call) { alert("Could not reach that peer."); return; }
 
     callRef.current = call;
     setCurrentScreen("viewing");
 
     call.on("stream", (stream) => {
-      console.log("🎉 Stream received!", stream.getTracks().map(t => t.kind));
+      console.log("🎉 Remote stream tracks:", stream.getTracks().map(t => `${t.kind}(${t.enabled})`));
       remoteStreamRef.current = stream;
       setRemoteStream(stream);
       dispatch(setSessionMode(1));
       dispatch(setSessionStartTime(new Date()));
     });
-    call.on("error",  (err) => { console.error("Call error:", err); resetSession(); });
-    call.on("close",  ()    => resetSession());
+    call.on("error", (err) => { console.error("Call error:", err); resetSession(); });
+    call.on("close", ()    => resetSession());
   }, [resetSession]);
 
-  useEffect(() => { if (sessionEnded)  { resetSession(); setSessionEnded(false); } }, [sessionEnded]);
+  useEffect(() => { if (sessionEnded) { resetSession(); setSessionEnded(false); } }, [sessionEnded]);
   useEffect(() => {
     if (callRejected) { const t = setTimeout(() => setCallRejected(false), 4000); return () => clearTimeout(t); }
   }, [callRejected]);
@@ -243,6 +267,7 @@ const App = () => {
         callRef={callRef}
         remoteIdRef={remoteIdRef}
         userIdRef={userIdRef}
+        localMicTrackRef={localMicTrackRef}
         onDisconnect={handleDisconnect}
         onEndSession={handleDisconnect}
       />
@@ -256,6 +281,7 @@ const App = () => {
         socketRef={socketRef}
         remoteIdRef={remoteIdRef}
         userIdRef={userIdRef}
+        localMicTrackRef={localMicTrackRef}
         incomingCall={incomingCall}
         incomingCallerId={incomingCallerId}
         acceptCall={acceptCall}

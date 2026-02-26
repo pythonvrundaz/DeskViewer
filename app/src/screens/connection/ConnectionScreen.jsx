@@ -1,249 +1,3 @@
-// // ConnectionScreen.jsx
-// import { useEffect, useRef, useState } from "react";
-// import Loading from "../../components/Loading";
-// import { useNavigate } from "react-router-dom";
-// import SessionInfo from "../../components/SessionInfo";
-// import { useDispatch, useSelector } from "react-redux";
-// import { Peer } from "peerjs";
-// import { setRemoteConnectionId, setSessionMode, setSessionStartTime, setShowSessionDialog, setUserConnectionId } from "../../states/connectionSlice";
-
-// const { ipcRenderer } = window.require("electron");
-
-// const ConnectionScreen = ({ callRef, socket }) => {
-//   const [remoteConnecting, setRemoteConnecting] = useState(false);
-//   const [showCopied, setShowCopied] = useState(false);
-
-//   const navigate = useNavigate();
-//   const dispatch = useDispatch();
-
-//   const [userId, setUserId] = useState("");
-//   const [remoteId, setRemoteId] = useState("");
-
-//   let sourceId;
-
-//   const peerInstance = useRef(null);
-
-//   const remoteVideoRef = useRef();
-
-//   const showSessionDialog = useSelector(
-//     (state) => state.connection.showSessionDialog
-//   );
-
-//   const handleCopied = (e) => {
-//     navigator.clipboard.writeText(e.target.value);
-//     setShowCopied(true);
-//   };
-
-//   useEffect(() => {
-//     if (showCopied) {
-//       setTimeout(() => {
-//         setShowCopied(false);
-//       }, 2000);
-//     }
-//   }, [showCopied]);
-
-//   useEffect(() => {
-//     const max = 9999999999;
-//     const min = 1000000000;
-//     const uid = Math.floor(Math.random() * (max - min + 1)) + min;
-
-//     setUserId(uid);
-//     dispatch(setUserConnectionId(uid));
-
-//     socket.emit("join", "User" + uid);
-
-//     const peerOptions = {
-//       // host: "127.0.0.1",
-//       host: "localhost",
-
-//       port: 5000,
-//       path: "/peerjs",
-//       config: {
-//         iceServers: [
-//           { url: "stun:stun01.sipphone.com" },
-//           { url: "stun:stun.ekiga.net" },
-//           { url: "stun:stunserver.org" },
-//           { url: "stun:stun.softjoys.com" },
-//           { url: "stun:stun.voiparound.com" },
-//           { url: "stun:stun.voipbuster.com" },
-//           { url: "stun:stun.voipstunt.com" },
-//           { url: "stun:stun.voxgratia.org" },
-//           { url: "stun:stun.xten.com" },
-//           {
-//             url: "turn:192.158.29.39:3478?transport=udp",
-//             credential: "JZEOEt2V3Qb0y27GRntt2u2PAYA=",
-//             username: "28224511:1379330808",
-//           },
-//           {
-//             url: "turn:192.158.29.39:3478?transport=tcp",
-//             credential: "JZEOEt2V3Qb0y27GRntt2u2PAYA=",
-//             username: "28224511:1379330808",
-//           },
-//         ],
-//       },
-//     };
-    
-//     // FOR CUSTOM SERVER:
-//     //  const peer = new Peer(uid,peerOptions);
-//     const peer = new Peer(uid, {
-//       host: "localhost",
-//       port: 5000,
-//       path: "/peerjs"
-//     }
-//   );
-//       peer.on("open", (id) => {
-//         console.log("PeerJS connected with id:", id);
-//       });
-
-//     // const peer = new Peer(uid);
-
-//     // Receive call
-//     peer.on("call", (call) => {
-//       if (window.confirm("Incoming call from " + call.peer) === true) {
-//         console.log("Source Id: " + sourceId);
-//         navigator.mediaDevices
-//           .getUserMedia({
-//             audio: false,
-//             video: {
-//               mandatory: {
-//                 chromeMediaSource: "desktop",
-//                 chromeMediaSourceId: sourceId,
-//                 minWidth: 1280,
-//                 maxWidth: 1280,
-//                 minHeight: 720,
-//                 maxHeight: 720,
-//               },
-//             },
-//           })
-//           .then((mediaStream) => {
-//             setRemoteId(call.peer);
-//             dispatch(setRemoteConnectionId(call.peer));
-
-//             // Answer call with screen's display data stream
-//             call.answer(mediaStream);
-//             dispatch(setSessionMode(0));
-//             dispatch(setSessionStartTime(new Date()));
-//             dispatch(setShowSessionDialog(true));
-
-//             // FOR PLAYING AUDIO OF REMOTE
-//             call.on("stream", function (remoteStream) {
-//               remoteVideoRef.current.srcObject = remoteStream;
-//               remoteVideoRef.current.play();
-//             });
-//           })
-//           .catch((e) => console.log("Error: " + e));
-//       }
-//     });
-
-//     ipcRenderer.on("SET_SOURCE", async (event, id) => {
-//       console.log("Source Id Recieved: " + id);
-//       sourceId = id;
-//     });
-
-//     peerInstance.current = peer;
-//   }, []);
-
-//   const connect = () => {
-//     console.log(`Id: ${userId}\nRemote: ${remoteId}`);
-
-//     if (!remoteId || remoteId.length < 10) {
-//       alert("Invalid Remote ID");
-//       return;
-//     } else if (!remoteId.match(/^\d+$/)) {
-//       alert("Remote ID cannot be a string");
-//       return;
-//     } else if (parseInt(remoteId) === parseInt(userId)) {
-//       alert("User ID and Remote ID cannot be same");
-//       return;
-//     }
-
-//     setRemoteConnecting(true);
-
-//     // Do not share your video and audio if you are connecting to remote
-//     navigator.mediaDevices
-//       .getUserMedia({ video: true, audio: true })
-//       .then((mediaStream) => {
-//         // Make call to remote
-//         const call = peerInstance.current.call(remoteId, mediaStream);
-
-//         callRef.current = call;
-//         navigate("/app");
-//       })
-//       .catch((e) => console.log("Error: " + e));
-//   };
-
-//   return (
-//     <div className="h-screen flex">
-//       <div className="bg-sky-500 text-white basis-1/2 flex items-center justify-center">
-//         <div className="w-1/2 flex flex-col items-center justify-center">
-//           <img
-//             src="/img/deskviewer_logo_transparent.png"
-//             className="w-1/2"
-//             alt="logo"
-//           />
-//           <div className="font-semibold text-3xl mt-4">DeskViewer</div>
-//           <div className="font-regular text-md">Version 1.0</div>
-//         </div>
-//       </div>
-//       <div className="bg-white basis-1/2 flex flex-col items-center justify-center">
-//         <div className="w-9/12">
-//           <div className="w-full text-md font-regular text-gray-700">
-//             Your Connection Id
-//             {showCopied && (
-//               <span className="ml-1 text-green-700 text-xs">(Copied)</span>
-//             )}
-//           </div>
-//           <input
-//             type="text"
-//             placeholder="XXXXXXXXXX"
-//             value={userId}
-//             readOnly
-//             className="w-full text-xl block overflow-hidden rounded-md text-gray-900 border border-gray-200 px-3 py-2 shadow-sm focus:outline-none cursor-pointer"
-//             title="Click here to copy"
-//             onClick={handleCopied}
-//           />
-//         </div>
-
-//         <div className="w-9/12 mt-5">
-//           <div className="w-full text-md font-regular text-gray-700">
-//             Remote Connection Id
-//           </div>
-//           <input
-//             type="text"
-//             placeholder="9876543210"
-//             className="w-full text-xl block overflow-hidden rounded-md text-gray-900 border border-gray-200 px-3 py-2 shadow-sm focus:outline-none"
-//             value={remoteId}
-//             onChange={(e) => {
-//               setRemoteId(e.target.value);
-//               dispatch(setRemoteConnectionId(e.target.value));
-//             }}
-//           />
-//         </div>
-//         <div className="w-9/12 mt-6">
-//           <button
-//             onClick={() => connect()}
-//             disabled={remoteConnecting}
-//             className="w-full flex items-center justify-center text-center rounded border border-red-600 bg-red-600 px-12 py-3 text-sm font-medium text-white enabled:hover:bg-red-500 enabled:cursor-pointer focus:outline-none disabled:bg-gray-400 disabled:border-gray-400"
-//           >
-//             <span className={remoteConnecting ? "mr-2" : ""}>
-//               {remoteConnecting ? "Connecting" : "Connect"}
-//             </span>
-//             {remoteConnecting && <Loading />}
-//           </button>
-//         </div>
-//       </div>
-//       <div className="hidden">
-//         <video ref={remoteVideoRef} />
-//       </div>
-
-//       {showSessionDialog && <SessionInfo socket={socket} />}
-//     </div>
-//   );
-// };
-
-// export default ConnectionScreen;
-
-// ---------------------------------------------------------------------------------------------------------------------------------
 // ConnectionScreen.jsx
 import { useEffect, useRef, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
@@ -259,9 +13,16 @@ const fmtSize = (b) => {
 const isImage = (t="") => t.startsWith("image/");
 const msgId   = () => Math.random().toString(36).slice(2);
 
+const EMOJIS = [
+  "😀","😂","😍","🥰","😎","😭","😅","🤔","😮","😡",
+  "👍","👎","❤️","🔥","✅","❌","🎉","🙏","💯","👀",
+  "🤣","😊","😇","🥳","😴","🤯","🤝","💪","🎊","👋",
+  "✌️","🫡","💬","📎","🖼️","🚀","⭐","💡","🔔","😆",
+];
+
 // ─────────────────────────────────────────────────────────────────────────────
 const ConnectionScreen = ({
-  myId, socketRef, remoteIdRef, userIdRef,
+  myId, socketRef, remoteIdRef, userIdRef, localMicTrackRef,
   incomingCall, incomingCallerId, acceptCall, rejectCall,
   startCall, onEndSession, callRejected,
 }) => {
@@ -275,12 +36,15 @@ const ConnectionScreen = ({
 
   // chat state
   const [showChat,  setShowChat]  = useState(false);
+  const [muted,     setMuted]     = useState(true);   // mic muted by default
+  const [showEmoji, setShowEmoji] = useState(false);
   const [messages,  setMessages]  = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [uploading, setUploading] = useState(false);
   const [unread,    setUnread]    = useState(0);
   const chatEndRef   = useRef(null);
   const fileInputRef = useRef(null);
+  const textareaRef  = useRef(null);
 
   // ── misc effects ───────────────────────────────────────────────────────────
   useEffect(() => { if (callRejected) setConnecting(false); }, [callRejected]);
@@ -305,7 +69,26 @@ const ConnectionScreen = ({
     if (showChat) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, showChat]);
 
-  const toggleChat = () => { setShowChat(v => { if (!v) setUnread(0); return !v; }); };
+  const toggleChat = () => { setShowEmoji(false); setShowChat(v => { if (!v) setUnread(0); return !v; }); };
+
+  // ── mute/unmute mic ───────────────────────────────────────────────────────────
+  const toggleMute = () => {
+    const track = localMicTrackRef?.current;
+    if (!track) { console.warn("No mic track"); return; }
+    track.enabled = !track.enabled;
+    setMuted(!track.enabled);
+  };
+
+  // ── insert emoji ───────────────────────────────────────────────────────────
+  const insertEmoji = (emoji) => {
+    const el = textareaRef.current;
+    if (!el) { setChatInput(v => v + emoji); return; }
+    const start = el.selectionStart ?? chatInput.length;
+    const end   = el.selectionEnd   ?? chatInput.length;
+    const next  = chatInput.slice(0, start) + emoji + chatInput.slice(end);
+    setChatInput(next);
+    setTimeout(() => { el.selectionStart = el.selectionEnd = start + emoji.length; el.focus(); }, 0);
+  };
 
   // ── send text ──────────────────────────────────────────────────────────────
   const sendText = () => {
@@ -319,6 +102,7 @@ const ConnectionScreen = ({
     setMessages(prev => [...prev, msg]);
     socket.emit("chat-message", { remoteId, msg: { ...msg, from: "them" } });
     setChatInput("");
+    setShowEmoji(false);
   };
 
   // ── send file ──────────────────────────────────────────────────────────────
@@ -539,9 +323,26 @@ const ConnectionScreen = ({
               <div style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 5px #22c55e" }}/>
               <span style={{ fontSize:14, fontWeight:700, color:"#111827" }}>Chat</span>
             </div>
-            <button onClick={toggleChat} style={{ background:"none", border:"none", color:"#6b7280", cursor:"pointer", padding:4, borderRadius:6 }}>
-              <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12"/></svg>
-            </button>
+            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+              {/* mic mute button */}
+              <button onClick={toggleMute} title={muted?"Unmute mic":"Mute mic"}
+                style={{ background: muted?"#e5e7eb":"#dcfce7", border:"none", borderRadius:6, padding:"4px 8px", cursor:"pointer", display:"flex", alignItems:"center", gap:4, fontSize:11, fontWeight:600, color: muted?"#6b7280":"#15803d" }}>
+                {muted ? (
+                  <svg style={{width:12,height:12}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                    <line x1="3" y1="3" x2="21" y2="21" strokeWidth={2} strokeLinecap="round"/>
+                  </svg>
+                ) : (
+                  <svg style={{width:12,height:12}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                  </svg>
+                )}
+                {muted ? "Unmute" : "Mute"}
+              </button>
+              <button onClick={toggleChat} style={{ background:"none", border:"none", color:"#6b7280", cursor:"pointer", padding:4, borderRadius:6 }}>
+                <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            </div>
           </div>
 
           {/* messages */}
@@ -569,6 +370,18 @@ const ConnectionScreen = ({
             </div>
           )}
 
+          {/* emoji picker */}
+          {showEmoji && (
+            <div style={{ borderTop:"1px solid #e5e7eb", padding:"8px", display:"flex", flexWrap:"wrap", gap:2, maxHeight:140, overflowY:"auto", background:"#f9fafb" }}>
+              {EMOJIS.map(e => (
+                <button key={e} onClick={() => insertEmoji(e)}
+                  style={{ background:"none", border:"none", fontSize:18, cursor:"pointer", padding:"2px 4px", borderRadius:4, lineHeight:1 }}>
+                  {e}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* input */}
           <div style={{ padding:"8px 10px", borderTop:"1px solid #e5e7eb", display:"flex", gap:6, alignItems:"flex-end", background:"#f9fafb" }}>
             <button onClick={() => fileInputRef.current?.click()} title="Attach file"
@@ -581,7 +394,12 @@ const ConnectionScreen = ({
             <input ref={fileInputRef} type="file" style={{ display:"none" }}
               onChange={(e) => { sendFile(e.target.files[0]); e.target.value=""; }} />
 
-            <textarea value={chatInput} onChange={(e) => setChatInput(e.target.value)}
+            <button onClick={() => setShowEmoji(v => !v)} title="Emoji"
+              style={{ background: showEmoji?"#ede9fe":"#fff", border:"1px solid #d1d5db", borderRadius:7, padding:"7px 8px", cursor:"pointer", flexShrink:0, fontSize:14 }}>
+              😊
+            </button>
+
+            <textarea ref={textareaRef} value={chatInput} onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => { if (e.key==="Enter" && !e.shiftKey) { e.preventDefault(); sendText(); } }}
               placeholder="Message… (Enter to send)"
               rows={1}
