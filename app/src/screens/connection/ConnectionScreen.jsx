@@ -48,6 +48,12 @@ const ConnectionScreen = ({
 
   // ── misc effects ───────────────────────────────────────────────────────────
   useEffect(() => { if (callRejected) setConnecting(false); }, [callRejected]);
+
+  // Sync muted UI with actual track state (track is muted in App.js right after call)
+  useEffect(() => {
+    const track = localMicTrackRef?.current;
+    if (track) setMuted(!track.enabled);
+  }, []);
   useEffect(() => {
     if (showCopied) { const t = setTimeout(() => setShowCopied(false), 2000); return () => clearTimeout(t); }
   }, [showCopied]);
@@ -74,9 +80,10 @@ const ConnectionScreen = ({
   // ── mute/unmute mic ───────────────────────────────────────────────────────────
   const toggleMute = () => {
     const track = localMicTrackRef?.current;
-    if (!track) { console.warn("No mic track"); return; }
+    if (!track) { console.warn("🎤 No mic track available"); return; }
     track.enabled = !track.enabled;
     setMuted(!track.enabled);
+    console.log(`🎤 Mic → ${track.enabled ? "UNMUTED" : "MUTED"}`);
   };
 
   // ── insert emoji ───────────────────────────────────────────────────────────
@@ -89,6 +96,12 @@ const ConnectionScreen = ({
     setChatInput(next);
     setTimeout(() => { el.selectionStart = el.selectionEnd = start + emoji.length; el.focus(); }, 0);
   };
+
+  // Clear chat when session ends
+  useEffect(() => {
+    const rid = remoteIdRef?.current;
+    if (!rid) { setMessages([]); setShowChat(false); setUnread(0); }
+  }, [remoteIdRef?.current]);
 
   // ── send text ──────────────────────────────────────────────────────────────
   const sendText = () => {

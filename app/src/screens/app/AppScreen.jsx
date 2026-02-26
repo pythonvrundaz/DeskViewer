@@ -1,371 +1,3 @@
-// // AppScreen.jsx
-// import React, { useEffect, useRef, useState, useCallback } from "react";
-// import { useDispatch, useSelector } from "react-redux";
-// import SessionInfo from "../../components/SessionInfo";
-// import { setShowSessionDialog } from "../../states/connectionSlice";
-
-// const { ipcRenderer } = window.require("electron");
-
-// const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteIdRef, userIdRef, onDisconnect, onEndSession }) => {
-//   const videoRef    = useRef(null);
-//   const dispatch    = useDispatch();
-//   const mousePosRef = useRef(null);
-//   const controlRef  = useRef(false);
-
-//   const showSessionDialog = useSelector((s) => s.connection.showSessionDialog);
-
-//   const [videoPlaying,   setVideoPlaying]   = useState(false);
-//   const [controlEnabled, setControlEnabled] = useState(false);
-//   const [muted,          setMuted]          = useState(false);
-//   const [showToolbar,    setShowToolbar]     = useState(true);
-//   const toolbarTimerRef = useRef(null);
-
-//   // ── Stream attach ─────────────────────────────────────────────────────────────
-//   const attachStream = useCallback((stream) => {
-//     if (!stream || !videoRef.current) return;
-//     const video = videoRef.current;
-//     video.srcObject = stream;
-//     video.muted = false;
-//     video.play()
-//       .then(() => {
-//         setVideoPlaying(true);
-//         // Maximize viewer window so the video fills as much screen as possible
-//         // This is critical for small-screen viewers accessing big-screen hosts
-//         // More screen space = more precise cursor control
-//         ipcRenderer.send("maximize-for-viewing");
-//       })
-//       .catch(() => setTimeout(() => {
-//         video.play()
-//           .then(() => { setVideoPlaying(true); ipcRenderer.send("maximize-for-viewing"); })
-//           .catch(console.error);
-//       }, 600));
-//   }, []);
-
-//   useEffect(() => { if (remoteStream)            attachStream(remoteStream);            }, [remoteStream]);
-//   useEffect(() => { if (remoteStreamRef?.current) attachStream(remoteStreamRef.current); }, []);
-
-//   const toggleMute = () => {
-//     const next = !muted;
-//     setMuted(next);
-//     if (videoRef.current) videoRef.current.muted = next;
-//   };
-
-//   const minimizeWindow = () => ipcRenderer.send("minimize-to-taskbar");
-
-//   // ── Toolbar auto-hide ─────────────────────────────────────────────────────────
-//   const scheduleHide = useCallback(() => {
-//     clearTimeout(toolbarTimerRef.current);
-//     if (!controlRef.current) {
-//       toolbarTimerRef.current = setTimeout(() => setShowToolbar(false), 3000);
-//     }
-//   }, []);
-
-//   const handleMouseMove = useCallback(() => {
-//     if (controlRef.current) return;
-//     setShowToolbar(true);
-//     scheduleHide();
-//   }, [scheduleHide]);
-
-//   useEffect(() => {
-//     window.addEventListener("mousemove", handleMouseMove);
-//     scheduleHide();
-//     return () => { window.removeEventListener("mousemove", handleMouseMove); clearTimeout(toolbarTimerRef.current); };
-//   }, [handleMouseMove, scheduleHide]);
-
-//   // ── Coordinate scaling ────────────────────────────────────────────────────────
-//   //
-//   // Full explanation of the small→big screen problem:
-//   //
-//   //   Host stream resolution = video.videoWidth x video.videoHeight (e.g. 1920x1080)
-//   //   Viewer window = smaller (e.g. 1366x712 after toolbar removed)
-//   //
-//   //   objectFit:contain will letterbox/pillarbox the video.
-//   //   We calculate the actual rendered area inside the video element.
-//   //   Mouse position relative to that area → scale to stream resolution → send to host.
-//   //
-//   //   Host then scales stream coords → logical screen coords via toLogical().
-//   //   This two-step process is correct for any combination of screen sizes.
-//   //
-//   //   Key: we use video.videoWidth/Height (not screen size) as the target space.
-//   //   This is always correct because stream IS what gets displayed in the video element.
-
-//   const getScaledCoords = useCallback((e) => {
-//     const video = videoRef.current;
-//     if (!video) return { x: 0, y: 0 };
-
-//     const rect         = video.getBoundingClientRect();
-//     const streamW      = video.videoWidth  || 1280;
-//     const streamH      = video.videoHeight || 720;
-//     const streamAspect = streamW / streamH;
-//     const elemAspect   = rect.width / rect.height;
-
-//     let renderW, renderH, offsetX, offsetY;
-//     if (streamAspect > elemAspect) {
-//       // Black bars TOP and BOTTOM (letterbox)
-//       renderW = rect.width;
-//       renderH = rect.width / streamAspect;
-//       offsetX = 0;
-//       offsetY = (rect.height - renderH) / 2;
-//     } else {
-//       // Black bars LEFT and RIGHT (pillarbox)
-//       renderH = rect.height;
-//       renderW = rect.height * streamAspect;
-//       offsetX = (rect.width - renderW) / 2;
-//       offsetY = 0;
-//     }
-
-//     // Clamp to rendered video area only (exclude black bars)
-//     const relX = Math.max(0, Math.min(e.clientX - rect.left - offsetX, renderW));
-//     const relY = Math.max(0, Math.min(e.clientY - rect.top  - offsetY, renderH));
-
-//     return {
-//       x: Math.round((relX / renderW) * streamW),
-//       y: Math.round((relY / renderH) * streamH),
-//     };
-//   }, []);
-
-//   // ── Input listeners attached once ────────────────────────────────────────────
-//   useEffect(() => {
-//     const video = videoRef.current;
-//     if (!video) return;
-
-//     const emit = (name, data) => {
-//       const socket   = socketRef.current;
-//       const remoteId = String(remoteIdRef.current || "");
-//       const uid      = String(userIdRef.current   || "");
-//       if (!socket?.connected || !remoteId || !uid) return;
-//       socket.emit(name, { userId: uid, remoteId, event: data });
-//     };
-
-//     const onMouseMove = (e) => { if (!controlRef.current) return; mousePosRef.current = getScaledCoords(e); };
-//     const onMouseDown = (e) => {
-//       if (!controlRef.current) return;
-//       e.preventDefault(); e.stopPropagation();
-//       const c = getScaledCoords(e);
-//       emit("click",     { button: e.button, ...c });
-//       emit("mousedown", { button: e.button, ...c });
-//     };
-//     const onMouseUp  = (e) => { if (!controlRef.current) return; emit("mouseup",  { button: e.button, ...getScaledCoords(e) }); };
-//     const onDblClick = (e) => { if (!controlRef.current) return; e.preventDefault(); emit("dblclick", getScaledCoords(e)); };
-//     const onWheel    = (e) => { if (!controlRef.current) return; e.preventDefault(); emit("scroll", { scroll: e.deltaY, ...getScaledCoords(e) }); };
-
-//     const onKeyDown = (e) => {
-//       if (!controlRef.current) return;
-//       if (e.ctrlKey && e.shiftKey && e.key === "I") return;
-//       if (e.key === "Escape") {
-//         controlRef.current = false;
-//         setControlEnabled(false);
-//         setShowToolbar(true);
-//         video.style.cursor = "default";
-//         ipcRenderer.send("set-global-capture", false);
-//         return;
-//       }
-//       e.preventDefault();
-//       emit("keydown", { keyCode: e.key, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
-//     };
-//     const onKeyUp     = (e) => { if (!controlRef.current) return; emit("keyup", { keyCode: e.key }); };
-//     const onGlobalKey = (_, d) => { if (controlRef.current) emit("keydown", d); };
-//     ipcRenderer.on("global-keydown", onGlobalKey);
-
-//     const interval = setInterval(() => {
-//       if (!controlRef.current || !mousePosRef.current) return;
-//       const socket   = socketRef.current;
-//       const remoteId = String(remoteIdRef.current || "");
-//       const uid      = String(userIdRef.current   || "");
-//       if (socket?.connected && remoteId && uid) {
-//         socket.emit("mousemove", { userId: uid, remoteId, event: mousePosRef.current });
-//         mousePosRef.current = null;
-//       }
-//     }, 16);
-
-//     video.addEventListener("mousemove", onMouseMove);
-//     video.addEventListener("mousedown", onMouseDown);
-//     video.addEventListener("mouseup",   onMouseUp);
-//     video.addEventListener("dblclick",  onDblClick);
-//     video.addEventListener("wheel",     onWheel,   { passive: false });
-//     window.addEventListener("keydown",  onKeyDown);
-//     window.addEventListener("keyup",    onKeyUp);
-
-//     return () => {
-//       clearInterval(interval);
-//       ipcRenderer.removeListener("global-keydown", onGlobalKey);
-//       video.removeEventListener("mousemove", onMouseMove);
-//       video.removeEventListener("mousedown", onMouseDown);
-//       video.removeEventListener("mouseup",   onMouseUp);
-//       video.removeEventListener("dblclick",  onDblClick);
-//       video.removeEventListener("wheel",     onWheel);
-//       window.removeEventListener("keydown",  onKeyDown);
-//       window.removeEventListener("keyup",    onKeyUp);
-//     };
-//   }, [getScaledCoords]);
-
-//   const toggleControl = () => {
-//     const next = !controlRef.current;
-//     controlRef.current = next;
-//     setControlEnabled(next);
-
-//     if (next) {
-//       setShowToolbar(false);
-//       clearTimeout(toolbarTimerRef.current);
-//       if (videoRef.current) videoRef.current.style.cursor = "none";
-//     } else {
-//       setShowToolbar(true);
-//       scheduleHide();
-//       if (videoRef.current) videoRef.current.style.cursor = "default";
-//     }
-
-//     ipcRenderer.send("set-global-capture", next);
-
-//     // Send stream resolution to host for accurate coordinate scaling
-//     if (next && videoRef.current) {
-//       const sw = videoRef.current.videoWidth  || 1280;
-//       const sh = videoRef.current.videoHeight || 720;
-//       const socket   = socketRef.current;
-//       const remoteId = String(remoteIdRef.current || "");
-//       const uid      = String(userIdRef.current   || "");
-//       if (socket?.connected && remoteId && uid) {
-//         socket.emit("stream-resolution", { userId: uid, remoteId, event: { width: sw, height: sh } });
-//         console.log(`📐 Stream resolution sent: ${sw}x${sh}`);
-//       }
-//     }
-//   };
-
-//   const handleDisconnect = () => {
-//     if (!window.confirm("End this session?")) return;
-//     ipcRenderer.send("set-global-capture", false);
-//     const rid = remoteIdRef?.current;
-//     if (socketRef.current && rid) socketRef.current.emit("remotedisconnected", { remoteId: rid });
-//     if (callRef.current) { callRef.current.close(); callRef.current = null; }
-//     onDisconnect();
-//   };
-
-//   const tbtn = (bg, active) => ({
-//     display: "flex", alignItems: "center", gap: 5,
-//     padding: "6px 12px", borderRadius: 7, background: bg,
-//     border: active ? "1.5px solid rgba(255,255,255,0.7)" : "1.5px solid transparent",
-//     color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
-//   });
-
-//   const iconBtn = (title, onClick, icon) => (
-//     <button title={title} onClick={onClick} style={{
-//       background: "rgba(255,255,255,0.12)", border: "1.5px solid transparent",
-//       borderRadius: 7, padding: "6px 10px", color: "#fff", cursor: "pointer",
-//       display: "flex", alignItems: "center",
-//     }}>{icon}</button>
-//   );
-
-//   const toolbarVisible = showToolbar && !controlEnabled;
-
-//   return (
-//     <div style={{ width: "100vw", height: "100vh", background: "#0a0a0a", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-
-//       {/* TOOLBAR — collapses to 0 when control active */}
-//       <div style={{
-//         flexShrink: 0,
-//         height: toolbarVisible ? 56 : 0,
-//         overflow: "hidden",
-//         transition: "height 0.2s ease",
-//         display: "flex", alignItems: "center", justifyContent: "space-between",
-//         padding: toolbarVisible ? "0 14px" : "0",
-//         background: "rgba(15,15,20,0.97)",
-//         borderBottom: toolbarVisible ? "1px solid rgba(255,255,255,0.07)" : "none",
-//       }}>
-//         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-//           <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ade80", boxShadow: "0 0 6px #4ade80" }} />
-//           <span style={{ color: "#e5e7eb", fontSize: 13, fontWeight: 500 }}>{remoteIdRef.current}</span>
-//         </div>
-//         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-//           {iconBtn("Minimize to taskbar", minimizeWindow,
-//             <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-//               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M20 12H4"/>
-//             </svg>
-//           )}
-//           <button onClick={toggleMute} style={tbtn(muted ? "#4b5563" : "#0369a1", false)}>
-//             {muted
-//               ? <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"/></svg>
-//               : <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072M12 6v12m-3.536-9.536a5 5 0 000 7.072M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15z"/></svg>
-//             }
-//             {muted ? "Unmute" : "Mute"}
-//           </button>
-//           <button onClick={toggleControl} style={tbtn("#7c3aed", false)}>
-//             <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-//               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 6-5 2zm0 0l5 5"/>
-//             </svg>
-//             Request Control
-//           </button>
-//           <button onClick={() => dispatch(setShowSessionDialog(true))} style={tbtn("#0284c7", false)}>
-//             <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-//               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-//             </svg>
-//             Info
-//           </button>
-//           <button onClick={handleDisconnect} style={tbtn("#dc2626", false)}>
-//             <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-//               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
-//             </svg>
-//             Disconnect
-//           </button>
-//         </div>
-//       </div>
-
-//       {/* VIDEO AREA */}
-//       <div style={{ flex: 1, position: "relative", background: "#000", overflow: "hidden" }}>
-
-//         {!videoPlaying && (
-//           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#111827", zIndex: 5 }}>
-//             <svg className="animate-spin" style={{ width: 48, height: 48, color: "#38bdf8", marginBottom: 16 }} viewBox="0 0 24 24" fill="none">
-//               <circle style={{ opacity: 0.25 }} cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-//               <path   style={{ opacity: 0.75 }} fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-//             </svg>
-//             <p style={{ color: "#fff", fontSize: 17, fontWeight: 600, margin: 0 }}>Connecting to remote screen...</p>
-//             <p style={{ color: "#9ca3af", fontSize: 13, marginTop: 8 }}>Waiting for host to share</p>
-//             <button onClick={onDisconnect} style={{ marginTop: 20, padding: "8px 22px", borderRadius: 8, border: "1px solid #4b5563", background: "transparent", color: "#d1d5db", cursor: "pointer" }}>Cancel</button>
-//           </div>
-//         )}
-
-//         <video
-//           ref={videoRef}
-//           autoPlay
-//           playsInline
-//           style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
-//         />
-
-//         {/* Control active bar at TOP — never blocks bottom taskbar */}
-//         {controlEnabled && videoPlaying && (
-//           <div style={{
-//             position: "absolute", top: 0, left: 0, right: 0,
-//             display: "flex", alignItems: "center", justifyContent: "space-between",
-//             padding: "5px 12px",
-//             background: "linear-gradient(to bottom, rgba(120,20,20,0.92), transparent)",
-//             pointerEvents: "none",
-//             zIndex: 5,
-//           }}>
-//             <span style={{ color: "#fca5a5", fontSize: 11, fontWeight: 700, pointerEvents: "none" }}>
-//               ● CONTROL ACTIVE · Esc to release
-//             </span>
-//             <button
-//               onClick={toggleControl}
-//               style={{
-//                 pointerEvents: "auto",
-//                 background: "rgba(185,28,28,0.9)", border: "1px solid rgba(255,255,255,0.25)",
-//                 borderRadius: 6, padding: "3px 12px",
-//                 color: "#fff", fontSize: 11, fontWeight: 700, cursor: "pointer",
-//               }}
-//             >
-//               Release
-//             </button>
-//           </div>
-//         )}
-//       </div>
-
-//       {showSessionDialog && <SessionInfo socket={socketRef.current} onEndSession={onEndSession} />}
-//     </div>
-//   );
-// };
-
-// export default AppScreen;
-
-
 // AppScreen.jsx
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useDispatch, useSelector } from "react-redux";
@@ -390,25 +22,22 @@ const EMOJIS = [
   "✌️","🫡","💬","📎","🖼️","🚀","⭐","💡","🔔","😆",
 ];
 
-// ─────────────────────────────────────────────────────────────────────────────
 const AppScreen = ({
   remoteStream, remoteStreamRef, socketRef, callRef,
   remoteIdRef, userIdRef, localMicTrackRef,
   onDisconnect, onEndSession,
 }) => {
   const videoRef    = useRef(null);
+  const audioRef    = useRef(null);  // ← separate <audio> element for remote voice
   const dispatch    = useDispatch();
   const mousePosRef = useRef(null);
   const controlRef  = useRef(false);
 
   const showSessionDialog = useSelector((s) => s.connection.showSessionDialog);
 
-  // ── state ──────────────────────────────────────────────────────────────────
   const [videoPlaying,   setVideoPlaying]   = useState(false);
   const [controlEnabled, setControlEnabled] = useState(false);
-  // muted = YOUR mic is muted (not sending audio to remote)
-  // default true because mic starts muted in App.js getMicStream()
-  const [muted,          setMuted]          = useState(true);
+  const [muted,          setMuted]          = useState(true);   // YOUR mic, starts muted
   const [showToolbar,    setShowToolbar]     = useState(true);
   const [hostMinimized,  setHostMinimized]   = useState(false);
 
@@ -419,44 +48,67 @@ const AppScreen = ({
   const [uploading,   setUploading]   = useState(false);
   const [unread,      setUnread]      = useState(0);
   const [showEmoji,   setShowEmoji]   = useState(false);
-  const chatEndRef   = useRef(null);
-  const fileInputRef = useRef(null);
-  const textareaRef  = useRef(null);
+  const chatEndRef    = useRef(null);
+  const fileInputRef  = useRef(null);
+  const textareaRef   = useRef(null);
   const toolbarTimerRef = useRef(null);
 
-  // ── stream attach ──────────────────────────────────────────────────────────
+  // ── Attach remote stream ───────────────────────────────────────────────────
+  // Video element gets the full stream (video + any audio tracks).
+  // We ALSO attach the stream to a dedicated <audio> element to guarantee
+  // audio plays — Electron sometimes silences <video> autoplay audio.
   const attachStream = useCallback((stream) => {
-    if (!stream || !videoRef.current) return;
-    const video = videoRef.current;
-    video.srcObject = stream;
-    video.muted = false;   // MUST be false — we want to hear remote audio
-    video.volume = 1.0;
-    const tryPlay = () =>
-      video.play()
-        .then(() => { setVideoPlaying(true); ipcRenderer.send("maximize-for-viewing"); })
-        .catch((e) => { console.warn("play() failed:", e.message); setTimeout(tryPlay, 600); });
-    tryPlay();
+    if (!stream) return;
+
+    // ── video element (screen share) ──
+    if (videoRef.current) {
+      const video    = videoRef.current;
+      video.srcObject = stream;
+      video.muted    = true;   // mute video element — audio comes from audioRef below
+      video.volume   = 0;
+      const tryPlay  = () =>
+        video.play()
+          .then(() => { setVideoPlaying(true); ipcRenderer.send("maximize-for-viewing"); })
+          .catch((e) => { console.warn("video.play():", e.message); setTimeout(tryPlay, 600); });
+      tryPlay();
+    }
+
+    // ── audio element (remote voice) ──
+    // Build a new stream with ONLY the audio tracks from the remote stream.
+    // This avoids Electron's autoplay muting of video-with-audio.
+    if (audioRef.current) {
+      const audioTracks = stream.getAudioTracks();
+      console.log("🔊 Remote audio tracks:", audioTracks.map(t => `${t.label} enabled=${t.enabled} readyState=${t.readyState}`));
+      if (audioTracks.length > 0) {
+        const audioOnlyStream = new MediaStream(audioTracks);
+        audioRef.current.srcObject = audioOnlyStream;
+        audioRef.current.volume    = 1.0;
+        audioRef.current.muted     = false;
+        audioRef.current.play().catch(e => console.warn("audio.play():", e.message));
+      }
+    }
   }, []);
 
-  useEffect(() => { if (remoteStream)             attachStream(remoteStream);            }, [remoteStream]);
+  useEffect(() => { if (remoteStream)             attachStream(remoteStream);            }, [remoteStream, attachStream]);
   useEffect(() => { if (remoteStreamRef?.current)  attachStream(remoteStreamRef.current); }, []);
 
-  // ── Mute / Unmute YOUR mic ─────────────────────────────────────────────────
-  // localMicTrackRef.current is the AudioTrack from getUserMedia (set in App.js)
-  // track.enabled = false → silence sent to remote
-  // track.enabled = true  → your voice sent to remote
+  // Sync muted UI state with actual track state when component mounts
+  // (track was muted in App.js immediately after call was created)
+  useEffect(() => {
+    const track = localMicTrackRef?.current;
+    if (track) setMuted(!track.enabled);
+  }, []);
+
+  // ── Mute / unmute YOUR mic ─────────────────────────────────────────────────
   const toggleMute = () => {
     const track = localMicTrackRef?.current;
-    if (!track) {
-      console.warn("No mic track available");
-      return;
-    }
+    if (!track) { console.warn("🎤 No mic track"); return; }
     track.enabled = !track.enabled;
     setMuted(!track.enabled);
-    console.log(`🎤 Mic ${track.enabled ? "UNMUTED" : "MUTED"}`);
+    console.log(`🎤 Mic → ${track.enabled ? "UNMUTED (sending audio)" : "MUTED (silent)"}`);
   };
 
-  // ── toolbar auto-hide ──────────────────────────────────────────────────────
+  // ── Toolbar auto-hide ──────────────────────────────────────────────────────
   const scheduleHide = useCallback(() => {
     clearTimeout(toolbarTimerRef.current);
     if (!controlRef.current)
@@ -470,43 +122,37 @@ const AppScreen = ({
     return () => { window.removeEventListener("mousemove", onMove); clearTimeout(toolbarTimerRef.current); };
   }, [scheduleHide]);
 
-  // ── window minimize / restore ──────────────────────────────────────────────
+  // ── Window minimize / restore ──────────────────────────────────────────────
   useEffect(() => {
-    const onMinimized = () => {
-      if (videoRef.current) videoRef.current.style.cursor = "default";
-      setShowToolbar(true);
-      clearTimeout(toolbarTimerRef.current);
-    };
-    const onRestored = (_, payload) => {
+    const onMin = () => { if (videoRef.current) videoRef.current.style.cursor = "default"; setShowToolbar(true); clearTimeout(toolbarTimerRef.current); };
+    const onRes = (_, payload) => {
       const wasActive = payload?.controlActive ?? false;
-      if (videoRef.current)
-        videoRef.current.style.cursor = (wasActive && controlRef.current) ? "none" : "default";
+      if (videoRef.current) videoRef.current.style.cursor = (wasActive && controlRef.current) ? "none" : "default";
       if (!controlRef.current) { setShowToolbar(true); scheduleHide(); }
     };
     const onHostMin = () => {
       setHostMinimized(true);
       if (controlRef.current) {
-        controlRef.current = false;
-        setControlEnabled(false);
+        controlRef.current = false; setControlEnabled(false);
         if (videoRef.current) videoRef.current.style.cursor = "default";
         ipcRenderer.send("set-global-capture", false);
       }
     };
     const onHostRes = () => setHostMinimized(false);
 
-    ipcRenderer.on("window-minimized",      onMinimized);
-    ipcRenderer.on("window-restored",       onRestored);
+    ipcRenderer.on("window-minimized",      onMin);
+    ipcRenderer.on("window-restored",       onRes);
     ipcRenderer.on("host-window-minimized", onHostMin);
     ipcRenderer.on("host-window-restored",  onHostRes);
     return () => {
-      ipcRenderer.removeListener("window-minimized",      onMinimized);
-      ipcRenderer.removeListener("window-restored",       onRestored);
+      ipcRenderer.removeListener("window-minimized",      onMin);
+      ipcRenderer.removeListener("window-restored",       onRes);
       ipcRenderer.removeListener("host-window-minimized", onHostMin);
       ipcRenderer.removeListener("host-window-restored",  onHostRes);
     };
   }, [scheduleHide]);
 
-  // ── chat: receive ──────────────────────────────────────────────────────────
+  // ── Chat: receive ──────────────────────────────────────────────────────────
   useEffect(() => {
     const socket = socketRef.current;
     if (!socket) return;
@@ -515,7 +161,7 @@ const AppScreen = ({
       if (!showChat) setUnread(prev => prev + 1);
     };
     socket.on("chat-message", onMsg);
-    return () => socket.off("chat-message", onMsg);
+    return () => { socket.off("chat-message", onMsg); };
   }, [showChat]);
 
   useEffect(() => {
@@ -524,7 +170,7 @@ const AppScreen = ({
 
   const toggleChat = () => { setShowEmoji(false); setShowChat(v => { if (!v) setUnread(0); return !v; }); };
 
-  // ── chat: send text ────────────────────────────────────────────────────────
+  // ── Chat: send text ────────────────────────────────────────────────────────
   const sendText = () => {
     const text = chatInput.trim();
     if (!text) return;
@@ -535,21 +181,20 @@ const AppScreen = ({
     const msg = { id: msgId(), from: "me", fromId: uid, text, ts: Date.now() };
     setMessages(prev => [...prev, msg]);
     socket.emit("chat-message", { remoteId, msg: { ...msg, from: "them" } });
-    setChatInput("");
-    setShowEmoji(false);
+    setChatInput(""); setShowEmoji(false);
   };
 
   const insertEmoji = (emoji) => {
     const el = textareaRef.current;
     if (!el) { setChatInput(v => v + emoji); return; }
-    const start = el.selectionStart ?? chatInput.length;
-    const end   = el.selectionEnd   ?? chatInput.length;
-    const next  = chatInput.slice(0, start) + emoji + chatInput.slice(end);
+    const s    = el.selectionStart ?? chatInput.length;
+    const e2   = el.selectionEnd   ?? chatInput.length;
+    const next = chatInput.slice(0, s) + emoji + chatInput.slice(e2);
     setChatInput(next);
-    setTimeout(() => { el.selectionStart = el.selectionEnd = start + emoji.length; el.focus(); }, 0);
+    setTimeout(() => { el.selectionStart = el.selectionEnd = s + emoji.length; el.focus(); }, 0);
   };
 
-  // ── chat: send file ────────────────────────────────────────────────────────
+  // ── Chat: send file ────────────────────────────────────────────────────────
   const sendFile = async (file) => {
     if (!file) return;
     const socket   = socketRef.current;
@@ -566,28 +211,26 @@ const AppScreen = ({
       const msg  = { id: msgId(), from: "me", fromId: uid, file: data, ts: Date.now() };
       setMessages(prev => [...prev, msg]);
       socket.emit("chat-message", { remoteId, msg: { ...msg, from: "them" } });
-    } catch(e) { console.error("Upload failed:", e); }
-    finally    { setUploading(false); }
+    } catch (e) { console.error("Upload failed:", e); }
+    finally     { setUploading(false); }
   };
 
-  // ── coordinates ────────────────────────────────────────────────────────────
+  // ── Coordinates ───────────────────────────────────────────────────────────
   const getCoords = (e) => {
     const video = videoRef.current;
     if (!video) return { x:0, y:0 };
     const rect = video.getBoundingClientRect();
     const sw   = video.videoWidth  || 1280;
     const sh   = video.videoHeight || 720;
-    const sa   = sw / sh;
-    const ea   = rect.width / rect.height;
+    const sa   = sw / sh; const ea = rect.width / rect.height;
     let rW, rH, oX, oY;
-    if (sa > ea) { rW = rect.width;  rH = rect.width/sa;   oX = 0;                    oY = (rect.height-rH)/2; }
-    else         { rH = rect.height; rW = rect.height*sa;  oX = (rect.width-rW)/2;    oY = 0; }
+    if (sa > ea) { rW = rect.width;  rH = rect.width/sa;  oX = 0;                 oY = (rect.height-rH)/2; }
+    else         { rH = rect.height; rW = rect.height*sa; oX = (rect.width-rW)/2; oY = 0; }
     const relX = Math.max(0, Math.min(e.clientX - rect.left - oX, rW));
     const relY = Math.max(0, Math.min(e.clientY - rect.top  - oY, rH));
     return { x: Math.round((relX/rW)*sw), y: Math.round((relY/rH)*sh) };
   };
 
-  // ── stream resolution ──────────────────────────────────────────────────────
   const sendResolution = useCallback(() => {
     const video = videoRef.current;
     if (!video?.videoWidth) { setTimeout(sendResolution, 200); return; }
@@ -598,7 +241,7 @@ const AppScreen = ({
       socket.emit("stream-resolution", { userId:uid, remoteId, event:{ width:video.videoWidth, height:video.videoHeight }});
   }, []);
 
-  // ── input listeners ────────────────────────────────────────────────────────
+  // ── Input listeners ────────────────────────────────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -617,8 +260,7 @@ const AppScreen = ({
 
     let scrollAccum = 0;
     const onWheel = (e) => {
-      if (!controlRef.current) return;
-      e.preventDefault();
+      if (!controlRef.current) return; e.preventDefault();
       let delta = e.deltaY;
       if (e.deltaMode === 1) delta *= 40;
       if (e.deltaMode === 2) delta *= 800;
@@ -630,8 +272,7 @@ const AppScreen = ({
     };
 
     const onMouseMove = (e) => { if (!controlRef.current) return; mousePosRef.current = getCoords(e); };
-
-    const onKeyDown = (e) => {
+    const onKeyDown   = (e) => {
       if (!controlRef.current) return;
       if (e.ctrlKey && e.shiftKey && e.key === "I") return;
       const tag = document.activeElement?.tagName?.toLowerCase();
@@ -644,7 +285,7 @@ const AppScreen = ({
       e.preventDefault();
       emit("keydown", { keyCode:e.key, ctrl:e.ctrlKey, shift:e.shiftKey, alt:e.altKey, meta:e.metaKey });
     };
-    const onKeyUp = (e) => {
+    const onKeyUp     = (e) => {
       if (!controlRef.current) return;
       const tag = document.activeElement?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea") return;
@@ -685,27 +326,41 @@ const AppScreen = ({
     };
   }, []);
 
-  // ── toggle control ─────────────────────────────────────────────────────────
+  // ── Cleanup on unmount — clear audio/video so no ghost streams ───────────
+  useEffect(() => {
+    return () => {
+      if (videoRef.current) { videoRef.current.srcObject = null; }
+      if (audioRef.current) { audioRef.current.srcObject = null; }
+    };
+  }, []);
+
+  // ── Toggle control ─────────────────────────────────────────────────────────
   const toggleControl = () => {
     const next = !controlRef.current;
-    controlRef.current = next;
-    setControlEnabled(next);
+    controlRef.current = next; setControlEnabled(next);
     if (next) {
       dispatch(setShowSessionDialog(false));
-      setShowToolbar(true);
-      clearTimeout(toolbarTimerRef.current);
+      setShowToolbar(true); clearTimeout(toolbarTimerRef.current);
       if (videoRef.current) videoRef.current.style.cursor = "none";
       sendResolution();
     } else {
-      setShowToolbar(true);
-      scheduleHide();
+      setShowToolbar(true); scheduleHide();
       if (videoRef.current) videoRef.current.style.cursor = "default";
     }
     ipcRenderer.send("set-global-capture", next);
   };
 
+  // ── Disconnect — clean up audio, video, chat ──────────────────────────────
   const handleDisconnect = () => {
     if (!window.confirm("End this session?")) return;
+
+    // Stop remote audio/video
+    if (audioRef.current) { audioRef.current.srcObject = null; }
+    if (videoRef.current) { videoRef.current.srcObject = null; }
+
+    // Clear chat
+    setMessages([]); setShowChat(false); setUnread(0);
+
     ipcRenderer.send("set-global-capture", false);
     const rid = remoteIdRef?.current;
     if (socketRef.current && rid) socketRef.current.emit("remotedisconnected", { remoteId:rid });
@@ -713,7 +368,7 @@ const AppScreen = ({
     onDisconnect();
   };
 
-  // ── style helpers ──────────────────────────────────────────────────────────
+  // ── Style helpers ──────────────────────────────────────────────────────────
   const tbtn = (bg) => ({
     display:"flex", alignItems:"center", gap:5, padding:"6px 13px", borderRadius:7,
     background:bg, border:"1.5px solid transparent",
@@ -735,18 +390,15 @@ const AppScreen = ({
     </button>
   );
 
-  // ── chat bubble ────────────────────────────────────────────────────────────
+  // ── Chat bubble ────────────────────────────────────────────────────────────
   const Bubble = ({ msg }) => {
     const mine = msg.from === "me";
     const base = CONFIG.SOCKET_URL.replace(/\/$/, "");
     return (
       <div style={{ display:"flex", justifyContent: mine?"flex-end":"flex-start", marginBottom:6 }}>
-        <div style={{
-          maxWidth:"78%", boxShadow:"0 1px 4px rgba(0,0,0,0.3)",
+        <div style={{ maxWidth:"78%", boxShadow:"0 1px 4px rgba(0,0,0,0.3)",
           borderRadius: mine?"12px 12px 2px 12px":"12px 12px 12px 2px",
-          background: mine?"#7c3aed":"#1f2937",
-          padding: msg.file?"6px":"8px 12px",
-        }}>
+          background: mine?"#7c3aed":"#1f2937", padding: msg.file?"6px":"8px 12px" }}>
           {msg.text && <p style={{ margin:0, color:"#fff", fontSize:13, wordBreak:"break-word", whiteSpace:"pre-wrap" }}>{msg.text}</p>}
           {msg.file && isImage(msg.file.type) && (
             <a href={base+msg.file.url} target="_blank" rel="noreferrer">
@@ -773,21 +425,22 @@ const AppScreen = ({
     );
   };
 
-  // ── render ─────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div style={{ width:"100vw", height:"100vh", background:"#0a0a0a", display:"flex", flexDirection:"column", overflow:"hidden" }}>
+
+      {/* Hidden audio element — plays remote voice separately from video */}
+      <audio ref={audioRef} autoPlay style={{ display:"none" }} />
 
       {/* TOOLBAR */}
       <div style={{
         flexShrink:0, overflow:"hidden",
-        height: showToolbar ? 54 : 0,
-        transition:"height 0.2s ease",
+        height: showToolbar ? 54 : 0, transition:"height 0.2s ease",
         display:"flex", alignItems:"center", justifyContent:"space-between",
         padding: showToolbar ? "0 14px" : 0,
         background:"rgba(13,13,18,0.98)",
         borderBottom: showToolbar ? "1px solid rgba(255,255,255,0.07)" : "none",
       }}>
-        {/* LEFT: status + remote ID + control badge inline */}
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
           <div style={{ width:7, height:7, borderRadius:"50%", background:"#4ade80", boxShadow:"0 0 6px #4ade80" }}/>
           <span style={{ color:"#d1d5db", fontSize:13, fontWeight:500 }}>{remoteIdRef.current}</span>
@@ -799,7 +452,6 @@ const AppScreen = ({
           )}
         </div>
 
-        {/* RIGHT: buttons */}
         <div style={{ display:"flex", gap:6, alignItems:"center" }}>
           {ibtn("Minimize", () => ipcRenderer.send("minimize-to-taskbar"),
             <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -807,18 +459,16 @@ const AppScreen = ({
             </svg>
           )}
 
-          {/* Mic mute button — muted by default */}
-          <button onClick={toggleMute} style={tbtn(muted ? "#374151" : "#059669")} title={muted ? "Click to unmute mic" : "Click to mute mic"}>
+          {/* Mic mute button */}
+          <button onClick={toggleMute} title={muted ? "Unmute mic" : "Mute mic"} style={tbtn(muted ? "#374151" : "#059669")}>
             {muted ? (
               <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
                 <line x1="3" y1="3" x2="21" y2="21" strokeWidth={2} strokeLinecap="round"/>
               </svg>
             ) : (
               <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
               </svg>
             )}
             {muted ? "Unmute" : "Mute"}
@@ -835,8 +485,7 @@ const AppScreen = ({
             <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                 d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
-            </svg>,
-            unread
+            </svg>, unread
           )}
 
           <button onClick={() => dispatch(setShowSessionDialog(true))} style={tbtn("#0284c7")}>
@@ -872,7 +521,7 @@ const AppScreen = ({
             </div>
           )}
 
-          <video ref={videoRef} autoPlay playsInline
+          <video ref={videoRef} autoPlay playsInline muted
             style={{ width:"100%", height:"100%", objectFit:"contain", display:"block" }}
           />
 
@@ -890,7 +539,6 @@ const AppScreen = ({
         {/* CHAT PANEL */}
         {showChat && (
           <div style={{ width:300, display:"flex", flexDirection:"column", background:"#111827", borderLeft:"1px solid rgba(255,255,255,0.07)", flexShrink:0, position:"relative" }}>
-
             <div style={{ padding:"10px 14px", borderBottom:"1px solid rgba(255,255,255,0.07)", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
               <span style={{ color:"#e5e7eb", fontSize:13, fontWeight:600 }}>Chat</span>
               <button onClick={toggleChat} style={{ background:"none", border:"none", color:"#9ca3af", cursor:"pointer", padding:2 }}>
@@ -904,7 +552,8 @@ const AppScreen = ({
               {messages.length === 0 && (
                 <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", color:"#4b5563" }}>
                   <svg style={{width:36,height:36,marginBottom:8}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                      d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                   </svg>
                   <span style={{ fontSize:12 }}>No messages yet</span>
                 </div>
@@ -923,7 +572,6 @@ const AppScreen = ({
               </div>
             )}
 
-            {/* emoji picker */}
             {showEmoji && (
               <div style={{ position:"absolute", bottom:58, left:0, right:0, background:"#1f2937", borderTop:"1px solid rgba(255,255,255,0.08)", padding:"8px", display:"flex", flexWrap:"wrap", gap:2, maxHeight:150, overflowY:"auto", zIndex:10 }}>
                 {EMOJIS.map(e => (
@@ -935,9 +583,8 @@ const AppScreen = ({
               </div>
             )}
 
-            {/* input row */}
             <div style={{ padding:"8px 10px", borderTop:"1px solid rgba(255,255,255,0.07)", display:"flex", gap:5, alignItems:"flex-end" }}>
-              <button onClick={() => fileInputRef.current?.click()} title="Attach file"
+              <button onClick={() => fileInputRef.current?.click()} title="Attach"
                 style={{ background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:7, padding:"7px 8px", color:"#9ca3af", cursor:"pointer", flexShrink:0, display:"flex" }}>
                 <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
