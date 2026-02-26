@@ -9,7 +9,14 @@ const path     = require("path");
 const fs       = require("fs");
 
 app.set("trust proxy", 1);
-app.use((req, res, next) => { res.setHeader("ngrok-skip-browser-warning", "true"); next(); });
+app.use((req, res, next) => {
+  res.setHeader("ngrok-skip-browser-warning", "true");
+  res.setHeader("Access-Control-Allow-Origin",  "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, ngrok-skip-browser-warning");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
 app.use(express.json());
 
 // ── File upload storage ───────────────────────────────────────────────────────
