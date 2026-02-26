@@ -635,6 +635,9 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
     const onKeyDown = (e) => {
       if (!controlRef.current) return;
       if (e.ctrlKey && e.shiftKey && e.key === "I") return;
+      // If user is typing in chat input/textarea — do NOT forward to host
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
       if (e.key === "Escape") {
         controlRef.current = false;
         setControlEnabled(false);
@@ -646,7 +649,12 @@ const AppScreen = ({ remoteStream, remoteStreamRef, socketRef, callRef, remoteId
       e.preventDefault();
       emit("keydown", { keyCode:e.key, ctrl:e.ctrlKey, shift:e.shiftKey, alt:e.altKey, meta:e.metaKey });
     };
-    const onKeyUp     = (e) => { if (controlRef.current) emit("keyup", { keyCode:e.key }); };
+    const onKeyUp = (e) => {
+      if (!controlRef.current) return;
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      emit("keyup", { keyCode:e.key });
+    };
     const onGlobalKey = (_, d) => { if (controlRef.current) emit("keydown", d); };
 
     ipcRenderer.on("global-keydown", onGlobalKey);
