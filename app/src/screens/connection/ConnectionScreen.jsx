@@ -24,7 +24,7 @@ const EMOJIS = [
 const ConnectionScreen = ({
   myId, socketRef, remoteIdRef, userIdRef, localMicTrackRef,
   incomingCall, incomingCallerId, acceptCall, rejectCall,
-  startCall, onEndSession, callRejected,
+  startCall, onEndSession, callRejected, sessionReset,
 }) => {
   const dispatch = useDispatch();
   const [remoteId,   setRemoteId]   = useState("");
@@ -49,11 +49,7 @@ const ConnectionScreen = ({
   // ── misc effects ───────────────────────────────────────────────────────────
   useEffect(() => { if (callRejected) setConnecting(false); }, [callRejected]);
 
-  // Sync muted UI with actual track state (track is muted in App.js right after call)
-  useEffect(() => {
-    const track = localMicTrackRef?.current;
-    if (track) setMuted(!track.enabled);
-  }, []);
+
   useEffect(() => {
     if (showCopied) { const t = setTimeout(() => setShowCopied(false), 2000); return () => clearTimeout(t); }
   }, [showCopied]);
@@ -97,11 +93,18 @@ const ConnectionScreen = ({
     setTimeout(() => { el.selectionStart = el.selectionEnd = start + emoji.length; el.focus(); }, 0);
   };
 
-  // Clear chat when session ends
+  // When App.js signals session reset → reset all local state
+  // (sessionReset increments each time resetSession() is called)
   useEffect(() => {
-    const rid = remoteIdRef?.current;
-    if (!rid) { setMessages([]); setShowChat(false); setUnread(0); }
-  }, [remoteIdRef?.current]);
+    if (!sessionReset) return;          // skip on initial mount (value is 0)
+    setConnecting(false);               // unlock the connect button + input
+    setMessages([]);
+    setShowChat(false);
+    setUnread(0);
+    setShowEmoji(false);
+    setChatInput("");
+    setMuted(true);
+  }, [sessionReset]);
 
   // ── send text ──────────────────────────────────────────────────────────────
   const sendText = () => {
@@ -289,8 +292,8 @@ const ConnectionScreen = ({
         </div>
       </div>
 
-      {/* SESSION INFO MODAL */}
-      {showSessionDialog && <SessionInfo socket={socketRef?.current} onEndSession={onEndSession} />}
+      {/* SESSION INFO MODAL — only show when actively hosting (sessionMode=0 means host) */}
+      {showSessionDialog && sessionMode === 0 && <SessionInfo socket={socketRef?.current} onEndSession={onEndSession} />}
 
       {/* ── CHAT BUTTON (floating, only when session active) ────────────────── */}
       {sessionActive && (
