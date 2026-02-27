@@ -17,8 +17,8 @@ const msgId   = () => Math.random().toString(36).slice(2);
 
 const EMOJIS = [
   "😀","😂","😍","🥰","😎","😭","😅","🤔","😮","😡",
-  "🤣","😊","😇","🥳","😴","🤯","🤝","💪","🎊","👋",
   "👍","👎","❤️","🔥","✅","❌","🎉","🙏","💯","👀",
+  "🤣","😊","😇","🥳","😴","🤯","🤝","💪","🎊","👋",
   "✌️","🫡","💬","📎","🖼️","🚀","⭐","💡","🔔","😆",
 ];
 
@@ -76,14 +76,26 @@ const AppScreen = ({
     if (audioRef.current) {
       const audioTracks = stream.getAudioTracks();
       console.log("🔊 Viewer audio tracks:", audioTracks.map(t => `${t.kind} label=${t.label} enabled=${t.enabled} state=${t.readyState}`));
+      const playAudio = (audioEl, tracks) => {
+        if (tracks.length === 0) { console.warn("🔊 No audio tracks yet"); return; }
+        const audioOnly = new MediaStream(tracks);
+        audioEl.srcObject = audioOnly;
+        audioEl.volume    = 1.0;
+        audioEl.muted     = false;
+        audioEl.play().catch(e => console.warn("audio.play():", e.message));
+      };
+
       if (audioTracks.length > 0) {
-        const audioOnly = new MediaStream(audioTracks);
-        audioRef.current.srcObject = audioOnly;
-        audioRef.current.volume    = 1.0;
-        audioRef.current.muted     = false;
-        audioRef.current.play().catch(e => console.warn("audio.play():", e.message));
+        playAudio(audioRef.current, audioTracks);
       } else {
-        console.warn("🔊 No audio tracks in host stream");
+        console.warn("🔊 No audio tracks yet — listening for addtrack");
+        // Listen for audio tracks that arrive after stream event
+        stream.addEventListener("addtrack", (ev) => {
+          if (ev.track.kind === "audio" && audioRef.current) {
+            console.log("🔊 Audio track added to stream");
+            playAudio(audioRef.current, stream.getAudioTracks());
+          }
+        });
       }
     }
   }, []);
@@ -91,10 +103,15 @@ const AppScreen = ({
   useEffect(() => { if (remoteStream)            attachStream(remoteStream);            }, [remoteStream, attachStream]);
   useEffect(() => { if (remoteStreamRef?.current) attachStream(remoteStreamRef.current); }, []);
 
-  // Sync muted UI with track state (mic was muted right after call in App.js)
+  // Sync muted UI with track state.
+  // Use a small delay because viewer's mic is muted after 200ms in App.js.
+  // State starts as true (muted) which is correct default.
   useEffect(() => {
-    const track = localMicTrackRef?.current;
-    if (track) setMuted(!track.enabled);
+    const t = setTimeout(() => {
+      const track = localMicTrackRef?.current;
+      if (track) setMuted(!track.enabled);
+    }, 300);
+    return () => clearTimeout(t);
   }, []);
 
   // ── Mute / unmute YOUR mic ─────────────────────────────────────────────────
