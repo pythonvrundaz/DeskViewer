@@ -31,18 +31,52 @@ const getMicStream = async () => {
   }
 };
 
-// Play a remote MediaStream on a hidden <audio> element — works in Electron
-// where <video> autoplay audio is sometimes blocked by autoplay policy.
-const playRemoteAudio = (stream, audioEl) => {
-  if (!audioEl || !stream) return;
-  const audioTracks = stream.getAudioTracks();
-  console.log("🔊 Remote audio tracks:", audioTracks.map(t => `${t.kind} label="${t.label}" enabled=${t.enabled} state=${t.readyState}`));
-  if (audioTracks.length === 0) { console.warn("🔊 No audio tracks in remote stream"); return; }
-  const audioOnly = new MediaStream(audioTracks);
-  audioEl.srcObject = audioOnly;
-  audioEl.volume = 1.0;
-  audioEl.muted  = false;
-  audioEl.play().then(() => console.log("🔊 Remote audio playing")).catch(e => console.warn("🔊 audio.play():", e.message));
+// Wire up the host audio element to hear the viewer's mic.
+// Uses BOTH pc.ontrack (raw WebRTC) AND call.on("stream") (PeerJS) as fallbacks.
+// pc.ontrack fires once per track — most reliable.
+// call.on("stream") is the PeerJS wrapper — fires when all tracks are ready.
+const wireHostAudio = (call, audioEl) => {
+  if (!audioEl) { console.warn("🔊 wireHostAudio: no audioEl"); return; }
+
+  const playAudioStream = (stream) => {
+    if (!stream) return;
+    const tracks = stream.getAudioTracks();
+    if (tracks.length === 0) { console.warn("🔊 no audio tracks yet"); return; }
+    console.log("🔊 Host playing viewer audio, tracks:", tracks.map(t => `${t.kind} state=${t.readyState}`));
+    const audioOnly = new MediaStream(tracks);
+    audioEl.srcObject = audioOnly;
+    audioEl.volume = 1.0;
+    audioEl.muted  = false;
+    audioEl.play()
+      .then(() => console.log("🔊 Host audio playing ✅"))
+      .catch(e => console.warn("🔊 host audio.play():", e.message));
+  };
+
+  // Method 1: RTCPeerConnection.ontrack — fires per-track, most reliable
+  // peerConnection may not exist yet when wireHostAudio is called (PeerJS lazily creates it).
+  // Poll until it exists, then attach.
+  const attachPcTrack = () => {
+    const pc = call.peerConnection;
+    if (!pc) { setTimeout(attachPcTrack, 50); return; }  // poll every 50ms until ready
+    const inStream = new MediaStream();
+    pc.ontrack = (ev) => {
+      console.log(`🔊 pc.ontrack: ${ev.track.kind} state=${ev.track.readyState}`);
+      if (ev.track.kind === "audio") {
+        inStream.addTrack(ev.track);
+        audioEl.srcObject = inStream;
+        audioEl.volume = 1.0;
+        audioEl.muted  = false;
+        audioEl.play().catch(e => console.warn("🔊 ontrack play():", e.message));
+      }
+    };
+  };
+  attachPcTrack();
+
+  // Method 2: PeerJS call.on("stream") — backup for when stream already has tracks
+  call.on("stream", (viewerStream) => {
+    console.log("🔊 call.on(stream) viewer:", viewerStream.getTracks().map(t => `${t.kind} enabled=${t.enabled}`));
+    playAudioStream(viewerStream);
+  });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,11 +117,15 @@ const App = () => {
     console.log("🎤 Mic stopped");
   }, []);
 
-  // ── Stop host audio playback ───────────────────────────────────────────────
+  // ── Stop host audio playback + clean up pc.ontrack ────────────────────────
   const stopHostAudio = useCallback(() => {
     if (hostAudioRef.current) {
       hostAudioRef.current.srcObject = null;
       hostAudioRef.current.pause();
+    }
+    // Remove pc.ontrack so stale handlers don't fire after disconnect
+    if (callRef.current?.peerConnection) {
+      callRef.current.peerConnection.ontrack = null;
     }
   }, []);
 
@@ -212,18 +250,16 @@ const App = () => {
       screenStream.getTracks().forEach(t => combined.addTrack(t)); // screen video + desktop audio
       if (micTrack) combined.addTrack(micTrack);                   // host mic
 
+      // ── Wire host audio BEFORE answer() so zero tracks are missed ──────
+      // pc.ontrack fires for each incoming track as soon as ICE connects.
+      // Must be set before call.answer() to guarantee we catch everything.
+      wireHostAudio(call, hostAudioRef.current);
+
       console.log("📡 Host answering with tracks:", combined.getTracks().map(t => `${t.kind} enabled=${t.enabled}`));
       call.answer(combined);
 
-      // Mute mic AFTER answer() — SDP is already committed with audio channel open
+      // Mute mic AFTER answer() — SDP already committed with audio channel open
       if (micTrack) { micTrack.enabled = false; console.log("🔇 Host mic muted"); }
-
-      // ── HOST hears VIEWER: call.on("stream") fires on BOTH sides ──────────
-      // The host's incoming remote stream contains the viewer's mic audio.
-      call.on("stream", (viewerStream) => {
-        console.log("🎉 Host got viewer stream:", viewerStream.getTracks().map(t => `${t.kind} enabled=${t.enabled} state=${t.readyState}`));
-        playRemoteAudio(viewerStream, hostAudioRef.current);
-      });
 
       callRef.current     = call;
       remoteIdRef.current = call.peer;
