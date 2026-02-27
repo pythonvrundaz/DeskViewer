@@ -154,6 +154,7 @@ const App = () => {
     remoteStreamRef.current = null;
     remoteIdRef.current     = "";
     dispatch(setShowSessionDialog(false));
+    dispatch(setSessionMode(-1));   // -1 = no active session, prevents SessionInfo showing
     ipcRenderer.send("session-ended");
     stopMic();
     stopHostAudio();

@@ -47,12 +47,28 @@ const ConnectionScreen = ({
   const textareaRef  = useRef(null);
 
   // ── misc effects ───────────────────────────────────────────────────────────
-  useEffect(() => { if (callRejected) setConnecting(false); }, [callRejected]);
+
 
 
   useEffect(() => {
     if (showCopied) { const t = setTimeout(() => setShowCopied(false), 2000); return () => clearTimeout(t); }
   }, [showCopied]);
+
+  // Sync mic muted UI with actual track state (track muted right after call in App.js)
+  useEffect(() => {
+    const track = localMicTrackRef?.current;
+    if (track) setMuted(!track.enabled);
+  }, []);
+
+  // Clear chat + reset UI when session ends (signalled by sessionReset counter incrementing)
+  useEffect(() => {
+    if (!sessionReset) return;
+    setMessages([]);
+    setShowChat(false);
+    setUnread(0);
+    setChatInput("");
+    setConnecting(false);
+  }, [sessionReset]);
 
   // ── receive chat messages ──────────────────────────────────────────────────
   useEffect(() => {
@@ -93,18 +109,13 @@ const ConnectionScreen = ({
     setTimeout(() => { el.selectionStart = el.selectionEnd = start + emoji.length; el.focus(); }, 0);
   };
 
-  // When App.js signals session reset → reset all local state
-  // (sessionReset increments each time resetSession() is called)
+  // When callRejected fires, reset connecting state so input is clickable again
+  // Messages/chat clear automatically when ConnectionScreen remounts after disconnect
   useEffect(() => {
-    if (!sessionReset) return;          // skip on initial mount (value is 0)
-    setConnecting(false);               // unlock the connect button + input
-    setMessages([]);
-    setShowChat(false);
-    setUnread(0);
-    setShowEmoji(false);
-    setChatInput("");
-    setMuted(true);
-  }, [sessionReset]);
+    if (callRejected) {
+      setConnecting(false);
+    }
+  }, [callRejected]);
 
   // ── send text ──────────────────────────────────────────────────────────────
   const sendText = () => {
@@ -207,7 +218,8 @@ const ConnectionScreen = ({
   };
 
   // only show chat button when a session is active (host is sharing)
-  const sessionActive = showSessionDialog;
+  // sessionActive: only true when host is in an active session (sessionMode=0)
+  const sessionActive = showSessionDialog && sessionMode === 0;
 
   return (
     <div style={s.page}>
@@ -293,7 +305,7 @@ const ConnectionScreen = ({
       </div>
 
       {/* SESSION INFO MODAL — only show when actively hosting (sessionMode=0 means host) */}
-      {showSessionDialog && sessionMode === 0 && <SessionInfo socket={socketRef?.current} onEndSession={onEndSession} />}
+      {showSessionDialog && (sessionMode === 0) && <SessionInfo socket={socketRef?.current} onEndSession={onEndSession} />}
 
       {/* ── CHAT BUTTON (floating, only when session active) ────────────────── */}
       {sessionActive && (
