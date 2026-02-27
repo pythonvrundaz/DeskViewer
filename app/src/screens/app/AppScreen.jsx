@@ -17,8 +17,8 @@ const msgId   = () => Math.random().toString(36).slice(2);
 
 const EMOJIS = [
   "😀","😂","😍","🥰","😎","😭","😅","🤔","😮","😡",
-  "🤣","😊","😇","🥳","😴","🤯","🤝","💪","🎊","👋",
   "👍","👎","❤️","🔥","✅","❌","🎉","🙏","💯","👀",
+  "🤣","😊","😇","🥳","😴","🤯","🤝","💪","🎊","👋",
   "✌️","🫡","💬","📎","🖼️","🚀","⭐","💡","🔔","😆",
 ];
 
@@ -26,10 +26,14 @@ const EMOJIS = [
 const AppScreen = ({
   remoteStream, remoteStreamRef, socketRef, callRef,
   remoteIdRef, userIdRef, localMicTrackRef,
+  audioRef,          // pre-unlocked <audio> ref passed from App.js
   onDisconnect, onEndSession,
 }) => {
   const videoRef        = useRef(null);
-  const audioRef        = useRef(null);   // plays host audio (screen sound + host mic)
+  // Use the ref passed from App.js (already pre-unlocked during Connect gesture).
+  // Fallback to a local ref in case AppScreen is ever used standalone.
+  const _localAudioRef  = useRef(null);
+  const _audioRef       = audioRef ?? _localAudioRef;
   const dispatch        = useDispatch();
   const mousePosRef     = useRef(null);
   const controlRef      = useRef(false);
@@ -73,17 +77,29 @@ const AppScreen = ({
     }
 
     // Audio-only element — plays desktop audio + host mic
-    if (audioRef.current) {
+    if (_audioRef.current) {
       const audioTracks = stream.getAudioTracks();
       console.log("🔊 Viewer audio tracks:", audioTracks.map(t => `${t.kind} label=${t.label} enabled=${t.enabled} state=${t.readyState}`));
+      const audioEl = _audioRef.current;
+      const playAudio = (el, tracks) => {
+        if (tracks.length === 0) { console.warn("🔊 No audio tracks yet"); return; }
+        const audioOnly = new MediaStream(tracks);
+        el.srcObject = audioOnly;
+        el.volume    = 1.0;
+        el.muted     = false;
+        el.play().catch(e => console.warn("audio.play():", e.message));
+      };
+
       if (audioTracks.length > 0) {
-        const audioOnly = new MediaStream(audioTracks);
-        audioRef.current.srcObject = audioOnly;
-        audioRef.current.volume    = 1.0;
-        audioRef.current.muted     = false;
-        audioRef.current.play().catch(e => console.warn("audio.play():", e.message));
+        playAudio(audioEl, audioTracks);
       } else {
-        console.warn("🔊 No audio tracks in host stream");
+        console.warn("🔊 No audio tracks yet — listening for addtrack");
+        stream.addEventListener("addtrack", (ev) => {
+          if (ev.track.kind === "audio" && _audioRef.current) {
+            console.log("🔊 Audio track added to stream");
+            playAudio(_audioRef.current, stream.getAudioTracks());
+          }
+        });
       }
     }
   }, []);
@@ -91,10 +107,15 @@ const AppScreen = ({
   useEffect(() => { if (remoteStream)            attachStream(remoteStream);            }, [remoteStream, attachStream]);
   useEffect(() => { if (remoteStreamRef?.current) attachStream(remoteStreamRef.current); }, []);
 
-  // Sync muted UI with track state (mic was muted right after call in App.js)
+  // Sync muted UI with track state.
+  // Use a small delay because viewer's mic is muted after 200ms in App.js.
+  // State starts as true (muted) which is correct default.
   useEffect(() => {
-    const track = localMicTrackRef?.current;
-    if (track) setMuted(!track.enabled);
+    const t = setTimeout(() => {
+      const track = localMicTrackRef?.current;
+      if (track) setMuted(!track.enabled);
+    }, 300);
+    return () => clearTimeout(t);
   }, []);
 
   // ── Mute / unmute YOUR mic ─────────────────────────────────────────────────
@@ -148,7 +169,7 @@ const AppScreen = ({
   // ── Cleanup on unmount ─────────────────────────────────────────────────────
   useEffect(() => () => {
     if (videoRef.current) videoRef.current.srcObject = null;
-    if (audioRef.current) audioRef.current.srcObject = null;
+    if (_audioRef.current) _audioRef.current.srcObject = null;
   }, []);
 
   // ── Chat: receive ──────────────────────────────────────────────────────────
@@ -293,7 +314,7 @@ const AppScreen = ({
   const handleDisconnect = () => {
     if (!window.confirm("End this session?")) return;
     // Clean up audio/video immediately
-    if (audioRef.current) audioRef.current.srcObject = null;
+    if (_audioRef.current) _audioRef.current.srcObject = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     setMessages([]); setShowChat(false); setUnread(0);
     ipcRenderer.send("set-global-capture", false);
@@ -343,8 +364,7 @@ const AppScreen = ({
   return (
     <div style={{ width:"100vw", height:"100vh", background:"#0a0a0a", display:"flex", flexDirection:"column", overflow:"hidden" }}>
 
-      {/* Audio element — plays host desktop audio + host mic (separate from muted video) */}
-      <audio ref={audioRef} autoPlay style={{ display:"none" }} />
+      {/* Audio element provided by App.js via audioRef prop — always mounted there */}
 
       {/* TOOLBAR */}
       <div style={{ flexShrink:0, overflow:"hidden", height:showToolbar?54:0, transition:"height 0.2s ease", display:"flex", alignItems:"center", justifyContent:"space-between", padding:showToolbar?"0 14px":0, background:"rgba(13,13,18,0.98)", borderBottom:showToolbar?"1px solid rgba(255,255,255,0.07)":"none" }}>
