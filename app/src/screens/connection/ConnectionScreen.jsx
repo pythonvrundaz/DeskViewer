@@ -273,7 +273,7 @@
 //       <div style={s.left}>
 //         <div style={{ textAlign:"center" }}>
 //           <img src="/img/deskviewer_logo_transparent.png" style={{ width:100, marginBottom:12 }} alt="logo" onError={(e) => e.target.style.display="none"} />
-//           <div style={{ fontSize:28, fontWeight:800, letterSpacing:-0.5 }}>DeskViewer</div>
+//           <div style={{ fontSize:28, fontWeight:800, letterSpacing:-0.5 }}>Vrundaz Connect</div>
 //           <div style={{ fontSize:13, opacity:0.75, marginTop:4 }}>Remote Desktop · Version 1.0</div>
 //         </div>
 //       </div>
@@ -474,6 +474,7 @@ const EMOJIS = [
 // ─────────────────────────────────────────────────────────────────────────────
 const ConnectionScreen = ({
   myId, socketRef, remoteIdRef, userIdRef, localMicTrackRef,
+  hostMicGainRef,   // ← GainNode that controls host mic in the audio mixer
   incomingCall, incomingCallerId, acceptCall, rejectCall,
   startCall, onEndSession, callRejected, sessionReset,
 }) => {
@@ -485,9 +486,8 @@ const ConnectionScreen = ({
   const showSessionDialog = useSelector((s) => s.connection.showSessionDialog);
   const sessionMode       = useSelector((s) => s.connection.sessionMode); // 0 = hosting
 
-  // chat state
   const [showChat,  setShowChat]  = useState(false);
-  const [muted,     setMuted]     = useState(true);  // mic muted by default
+  const [muted,     setMuted]     = useState(true);  // host mic starts muted
   const [showEmoji, setShowEmoji] = useState(false);
   const [messages,  setMessages]  = useState([]);
   const [chatInput, setChatInput] = useState("");
@@ -497,18 +497,11 @@ const ConnectionScreen = ({
   const fileInputRef = useRef(null);
   const textareaRef  = useRef(null);
 
-  // ── misc effects ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (showCopied) { const t = setTimeout(() => setShowCopied(false), 2000); return () => clearTimeout(t); }
   }, [showCopied]);
 
-  // Sync mic muted UI with actual track state
-  useEffect(() => {
-    const track = localMicTrackRef?.current;
-    if (track) setMuted(!track.enabled);
-  }, []);
-
-  // Clear chat + reset UI when session ends
+  // Clear chat + reset connecting state when session ends
   useEffect(() => {
     if (!sessionReset) return;
     setMessages([]);
@@ -516,9 +509,9 @@ const ConnectionScreen = ({
     setUnread(0);
     setChatInput("");
     setConnecting(false);
+    setMuted(true); // reset mute state for next session
   }, [sessionReset]);
 
-  // ── receive chat messages ──────────────────────────────────────────────────
   useEffect(() => {
     const socket = socketRef?.current;
     if (!socket) return;
@@ -536,15 +529,25 @@ const ConnectionScreen = ({
 
   const toggleChat = () => { setShowEmoji(false); setShowChat(v => { if (!v) setUnread(0); return !v; }); };
 
-  // ── mute/unmute HOST mic ───────────────────────────────────────────────────
-  // track.enabled = true  → RTCRtpSender sends audio → viewer hears you
-  // track.enabled = false → silence → viewer hears nothing from host mic
+  // ── HOST MIC MUTE TOGGLE ──────────────────────────────────────────────────
+  // Uses the AudioContext GainNode for smooth, click-free muting.
+  // gain.value = 0 → silence → viewer hears nothing from host mic
+  // gain.value = 1 → full volume → viewer hears host mic
+  //
+  // WHY GainNode and not track.enabled:
+  //   The host sends ONE mixed audio track (desktopAudio + mic merged).
+  //   We can't toggle "the mic track" in that merged output directly.
+  //   The GainNode is the mic's channel in the mix — setting gain=0 is mute.
   const toggleMute = () => {
-    const track = localMicTrackRef?.current;
-    if (!track) { console.warn("🎤 No mic track available"); return; }
-    track.enabled = !track.enabled;
-    setMuted(!track.enabled);
-    console.log(`🎤 Host mic → ${track.enabled ? "UNMUTED — viewer can hear you ✅" : "MUTED 🔇"}`);
+    const gain = hostMicGainRef?.current;
+    if (!gain) {
+      console.warn("🎤 Host mic gain node not ready yet");
+      return;
+    }
+    const nowMuted = gain.gain.value === 0;
+    gain.gain.value = nowMuted ? 1 : 0;
+    setMuted(!nowMuted);
+    console.log(`🎤 Host mic → ${nowMuted ? "UNMUTED — viewer can hear you ✅" : "MUTED 🔇"}`);
   };
 
   const insertEmoji = (emoji) => {
@@ -552,8 +555,7 @@ const ConnectionScreen = ({
     if (!el) { setChatInput(v => v + emoji); return; }
     const start = el.selectionStart ?? chatInput.length;
     const end   = el.selectionEnd   ?? chatInput.length;
-    const next  = chatInput.slice(0, start) + emoji + chatInput.slice(end);
-    setChatInput(next);
+    setChatInput(chatInput.slice(0, start) + emoji + chatInput.slice(end));
     setTimeout(() => { el.selectionStart = el.selectionEnd = start + emoji.length; el.focus(); }, 0);
   };
 
@@ -561,7 +563,6 @@ const ConnectionScreen = ({
     if (callRejected) setConnecting(false);
   }, [callRejected]);
 
-  // ── send text ──────────────────────────────────────────────────────────────
   const sendText = () => {
     const text = chatInput.trim();
     if (!text) return;
@@ -576,7 +577,6 @@ const ConnectionScreen = ({
     setShowEmoji(false);
   };
 
-  // ── send file ──────────────────────────────────────────────────────────────
   const sendFile = async (file) => {
     if (!file) return;
     const socket   = socketRef?.current;
@@ -605,34 +605,22 @@ const ConnectionScreen = ({
     startCall(remoteId);
   };
 
-  // ── Chat bubble ────────────────────────────────────────────────────────────
   const Bubble = ({ msg }) => {
     const mine = msg.from === "me";
     const base = CONFIG.SOCKET_URL.replace(/\/$/, "");
     return (
       <div style={{ display:"flex", justifyContent: mine?"flex-end":"flex-start", marginBottom:6 }}>
-        <div style={{
-          maxWidth:"75%",
-          borderRadius: mine?"12px 12px 2px 12px":"12px 12px 12px 2px",
-          background: mine?"#0284c7":"#f3f4f6",
-          padding: msg.file?"6px":"8px 12px",
-          boxShadow:"0 1px 3px rgba(0,0,0,0.08)",
-        }}>
-          {msg.text && (
-            <p style={{ margin:0, color: mine?"#fff":"#111827", fontSize:13, wordBreak:"break-word" }}>{msg.text}</p>
-          )}
+        <div style={{ maxWidth:"75%", borderRadius: mine?"12px 12px 2px 12px":"12px 12px 12px 2px", background: mine?"#0284c7":"#f3f4f6", padding: msg.file?"6px":"8px 12px", boxShadow:"0 1px 3px rgba(0,0,0,0.08)" }}>
+          {msg.text && <p style={{ margin:0, color: mine?"#fff":"#111827", fontSize:13, wordBreak:"break-word" }}>{msg.text}</p>}
           {msg.file && isImage(msg.file.type) && (
             <a href={base+msg.file.url} target="_blank" rel="noreferrer">
-              <img src={base+msg.file.url} alt={msg.file.name}
-                style={{ maxWidth:200, maxHeight:150, borderRadius:8, display:"block" }} />
+              <img src={base+msg.file.url} alt={msg.file.name} style={{ maxWidth:200, maxHeight:150, borderRadius:8, display:"block" }} />
             </a>
           )}
           {msg.file && !isImage(msg.file.type) && (
-            <a href={base+msg.file.url} target="_blank" rel="noreferrer"
-              style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", textDecoration:"none" }}>
+            <a href={base+msg.file.url} target="_blank" rel="noreferrer" style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", textDecoration:"none" }}>
               <svg style={{width:20,height:20,flexShrink:0,color: mine?"#bfdbfe":"#6b7280"}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
               </svg>
               <div>
                 <div style={{ color: mine?"#e0f2fe":"#111827", fontSize:12, fontWeight:600, wordBreak:"break-all" }}>{msg.file.name}</div>
@@ -640,9 +628,7 @@ const ConnectionScreen = ({
               </div>
             </a>
           )}
-          <div style={{ fontSize:10, marginTop:3, textAlign:"right",
-            color: mine?"rgba(255,255,255,0.5)":"#9ca3af",
-            paddingRight: msg.file ? 6 : 0 }}>
+          <div style={{ fontSize:10, marginTop:3, textAlign:"right", color: mine?"rgba(255,255,255,0.5)":"#9ca3af", paddingRight: msg.file ? 6 : 0 }}>
             {new Date(msg.ts).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}
           </div>
         </div>
@@ -650,7 +636,6 @@ const ConnectionScreen = ({
     );
   };
 
-  // ── styles ─────────────────────────────────────────────────────────────────
   const s = {
     page:  { height:"100vh", display:"flex", position:"relative", overflow:"hidden", fontFamily:"sans-serif" },
     left:  { flex:1, background:"#0ea5e9", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff" },
@@ -661,17 +646,13 @@ const ConnectionScreen = ({
     btn:   (bg, disabled) => ({ width:"100%", padding:13, borderRadius:8, border:"none", background:disabled?"#9ca3af":bg, color:"#fff", fontSize:15, fontWeight:700, cursor:disabled?"not-allowed":"pointer" }),
   };
 
-  // sessionActive: host is in an active screen-share session
   const sessionActive = showSessionDialog && sessionMode === 0;
 
   return (
     <div style={s.page}>
 
-      {/* REJECTION BANNER */}
       {callRejected && (
-        <div style={{ position:"fixed", top:20, left:"50%", transform:"translateX(-50%)", zIndex:100,
-          background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:10, padding:"12px 24px",
-          display:"flex", alignItems:"center", gap:10, boxShadow:"0 4px 20px rgba(0,0,0,0.15)" }}>
+        <div style={{ position:"fixed", top:20, left:"50%", transform:"translateX(-50%)", zIndex:100, background:"#fee2e2", border:"1px solid #fca5a5", borderRadius:10, padding:"12px 24px", display:"flex", alignItems:"center", gap:10, boxShadow:"0 4px 20px rgba(0,0,0,0.15)" }}>
           <span style={{ fontSize:20 }}>❌</span>
           <div>
             <div style={{ fontWeight:700, color:"#991b1b", fontSize:14 }}>Connection Rejected</div>
@@ -680,7 +661,6 @@ const ConnectionScreen = ({
         </div>
       )}
 
-      {/* INCOMING CALL */}
       {incomingCall && (
         <div style={{ position:"fixed", inset:0, zIndex:50, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(0,0,0,0.6)" }}>
           <div style={{ background:"#fff", borderRadius:16, boxShadow:"0 25px 60px rgba(0,0,0,0.4)", width:400, overflow:"hidden" }}>
@@ -712,7 +692,6 @@ const ConnectionScreen = ({
         </div>
       )}
 
-      {/* LEFT brand panel */}
       <div style={s.left}>
         <div style={{ textAlign:"center" }}>
           <img src="/img/deskviewer_logo_transparent.png" style={{ width:100, marginBottom:12 }} alt="logo" onError={(e) => e.target.style.display="none"} />
@@ -721,7 +700,6 @@ const ConnectionScreen = ({
         </div>
       </div>
 
-      {/* RIGHT connect panel */}
       <div style={s.right}>
         <div style={s.field}>
           <label style={s.label}>
@@ -747,20 +725,17 @@ const ConnectionScreen = ({
         </div>
       </div>
 
-      {/* SESSION INFO MODAL */}
       {showSessionDialog && sessionMode === 0 && <SessionInfo socket={socketRef?.current} onEndSession={onEndSession} />}
 
-      {/* ── HOST MIC BUTTON — floating, always visible during active session ── */}
-      {/* This is the PRIMARY mute control. Accessible without opening chat.    */}
+      {/* ── HOST MIC BUTTON — floating pill, always visible during session ── */}
       {sessionActive && (
         <button
           onClick={toggleMute}
-          title={muted ? "Unmute mic — viewer can hear you" : "Mute your mic"}
+          title={muted ? "Unmute mic — viewer will hear you" : "Mute your mic"}
           style={{
             position:"fixed",
             bottom: 24,
-            right: showChat ? 372 : 80,  // stays left of chat button
-            width: "auto",
+            right: showChat ? 372 : 80,
             height: 48,
             borderRadius: 24,
             padding: "0 18px",
@@ -771,7 +746,6 @@ const ConnectionScreen = ({
             cursor: "pointer",
             display: "flex",
             alignItems: "center",
-            justifyContent: "center",
             gap: 8,
             fontSize: 13,
             fontWeight: 600,
@@ -813,32 +787,20 @@ const ConnectionScreen = ({
               d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
           </svg>
           {unread > 0 && (
-            <span style={{
-              position:"absolute", top:-3, right:-3,
-              background:"#ef4444", color:"#fff", fontSize:9, fontWeight:700,
-              borderRadius:"50%", width:16, height:16,
-              display:"flex", alignItems:"center", justifyContent:"center",
-            }}>{unread > 9 ? "9+" : unread}</span>
+            <span style={{ position:"absolute", top:-3, right:-3, background:"#ef4444", color:"#fff", fontSize:9, fontWeight:700, borderRadius:"50%", width:16, height:16, display:"flex", alignItems:"center", justifyContent:"center" }}>{unread > 9 ? "9+" : unread}</span>
           )}
         </button>
       )}
 
       {/* ── CHAT PANEL ──────────────────────────────────────────────────────── */}
       {showChat && (
-        <div style={{
-          position:"fixed", right:0, top:0, bottom:0, width:300, zIndex:199,
-          display:"flex", flexDirection:"column",
-          background:"#fff", borderLeft:"1px solid #e5e7eb",
-          boxShadow:"-4px 0 20px rgba(0,0,0,0.1)",
-        }}>
-          {/* header */}
+        <div style={{ position:"fixed", right:0, top:0, bottom:0, width:300, zIndex:199, display:"flex", flexDirection:"column", background:"#fff", borderLeft:"1px solid #e5e7eb", boxShadow:"-4px 0 20px rgba(0,0,0,0.1)" }}>
           <div style={{ padding:"12px 16px", borderBottom:"1px solid #e5e7eb", display:"flex", alignItems:"center", justifyContent:"space-between", background:"#f9fafb" }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <div style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 5px #22c55e" }}/>
               <span style={{ fontSize:14, fontWeight:700, color:"#111827" }}>Chat</span>
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-              {/* Mic toggle also in chat header (secondary) */}
               <button onClick={toggleMute} title={muted?"Unmute mic":"Mute mic"}
                 style={{ background: muted?"#e5e7eb":"#dcfce7", border:"none", borderRadius:6, padding:"4px 8px", cursor:"pointer", display:"flex", alignItems:"center", gap:4, fontSize:11, fontWeight:600, color: muted?"#6b7280":"#15803d" }}>
                 {muted ? (
@@ -854,20 +816,16 @@ const ConnectionScreen = ({
                 {muted ? "Unmute" : "Mute"}
               </button>
               <button onClick={toggleChat} style={{ background:"none", border:"none", color:"#6b7280", cursor:"pointer", padding:4, borderRadius:6 }}>
-                <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12"/>
-                </svg>
+                <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12"/></svg>
               </button>
             </div>
           </div>
 
-          {/* messages */}
           <div style={{ flex:1, overflowY:"auto", padding:"12px 10px 4px", display:"flex", flexDirection:"column" }}>
             {messages.length === 0 && (
               <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", color:"#9ca3af" }}>
                 <svg style={{width:36,height:36,marginBottom:8}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                    d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                 </svg>
                 <span style={{ fontSize:12 }}>No messages yet</span>
               </div>
@@ -878,10 +836,7 @@ const ConnectionScreen = ({
 
           {uploading && (
             <div style={{ padding:"4px 14px", color:"#0284c7", fontSize:11, display:"flex", alignItems:"center", gap:6 }}>
-              <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none">
-                <circle style={{opacity:0.25}} cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                <path style={{opacity:0.75}} fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-              </svg>
+              <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none"><circle style={{opacity:0.25}} cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path style={{opacity:0.75}} fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
               Uploading...
             </div>
           )}
@@ -889,10 +844,7 @@ const ConnectionScreen = ({
           {showEmoji && (
             <div style={{ borderTop:"1px solid #e5e7eb", padding:"8px", display:"flex", flexWrap:"wrap", gap:2, maxHeight:140, overflowY:"auto", background:"#f9fafb" }}>
               {EMOJIS.map(e => (
-                <button key={e} onClick={() => insertEmoji(e)}
-                  style={{ background:"none", border:"none", fontSize:18, cursor:"pointer", padding:"2px 4px", borderRadius:4, lineHeight:1 }}>
-                  {e}
-                </button>
+                <button key={e} onClick={() => insertEmoji(e)} style={{ background:"none", border:"none", fontSize:18, cursor:"pointer", padding:"2px 4px", borderRadius:4, lineHeight:1 }}>{e}</button>
               ))}
             </div>
           )}
@@ -900,28 +852,21 @@ const ConnectionScreen = ({
           <div style={{ padding:"8px 10px", borderTop:"1px solid #e5e7eb", display:"flex", gap:6, alignItems:"flex-end", background:"#f9fafb" }}>
             <button onClick={() => fileInputRef.current?.click()} title="Attach file"
               style={{ background:"#fff", border:"1px solid #d1d5db", borderRadius:7, padding:"7px 8px", color:"#6b7280", cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center" }}>
-              <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
-              </svg>
+              <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
             </button>
-            <input ref={fileInputRef} type="file" style={{ display:"none" }}
-              onChange={(e) => { sendFile(e.target.files[0]); e.target.value=""; }} />
+            <input ref={fileInputRef} type="file" style={{ display:"none" }} onChange={(e) => { sendFile(e.target.files[0]); e.target.value=""; }} />
             <button onClick={() => setShowEmoji(v => !v)} title="Emoji"
               style={{ background: showEmoji?"#ede9fe":"#fff", border:"1px solid #d1d5db", borderRadius:7, padding:"7px 8px", cursor:"pointer", flexShrink:0, fontSize:14 }}>
               😊
             </button>
             <textarea ref={textareaRef} value={chatInput} onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => { if (e.key==="Enter" && !e.shiftKey) { e.preventDefault(); sendText(); } }}
-              placeholder="Message… (Enter to send)"
-              rows={1}
+              placeholder="Message… (Enter to send)" rows={1}
               style={{ flex:1, background:"#fff", border:"1px solid #d1d5db", borderRadius:7, padding:"7px 10px", color:"#111827", fontSize:12, resize:"none", outline:"none", fontFamily:"inherit", lineHeight:1.4, maxHeight:80, overflowY:"auto" }}
             />
             <button onClick={sendText} disabled={!chatInput.trim()}
               style={{ background:chatInput.trim()?"#0284c7":"#e5e7eb", border:"none", borderRadius:7, padding:"7px 10px", color:chatInput.trim()?"#fff":"#9ca3af", cursor:chatInput.trim()?"pointer":"default", flexShrink:0, display:"flex", alignItems:"center", transition:"background 0.15s" }}>
-              <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
-              </svg>
+              <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
             </button>
           </div>
         </div>
