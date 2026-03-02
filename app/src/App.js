@@ -467,6 +467,7 @@
 
 // export default App;
 
+
 // App.js
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import ConnectionScreen from "./screens/connection/ConnectionScreen";
@@ -757,6 +758,19 @@ const App = () => {
     socket.on("keyup",             e => ipcRenderer.send("keyup",             e));
     socket.on("stream-resolution", e => ipcRenderer.send("stream-resolution", e));
 
+    // ── Clipboard sync relay ───────────────────────────────────────────────
+    // The socket server relays clipboard-sync events between viewer and host.
+    // App.js is the relay point — it re-emits to the server with remoteId.
+    // The actual read/write of clipboard happens in the component that
+    // receives the event (ConnectionScreen for host, AppScreen for viewer).
+    // Nothing needed here — both sides listen via socketRef directly.
+
+    // ── Annotation relay ───────────────────────────────────────────────────
+    // annotation-frame: viewer draws → server → host sees canvas overlay
+    // annotation-clear: viewer clears → server → host clears overlay
+    // The server must relay these events just like chat-message.
+    // No action needed in App.js — components handle via socketRef.
+
     const peer = new Peer(uid, {
       host: CONFIG.PEER_HOST, port: CONFIG.PEER_PORT,
       path: CONFIG.PEER_PATH, secure: CONFIG.PEER_SECURE, debug: 2,
@@ -775,7 +789,41 @@ const App = () => {
     peer.on("call", call => { setIncomingCall(call); setIncomingCallerId(call.peer); });
 
     peerInstance.current = peer;
-    return () => { socket.disconnect(); peer.destroy(); stopMic(); stopAllAudio(); };
+
+    // ── GRACEFUL CLOSE on Electron X button ──────────────────────────────
+    // When the user clicks X, main.js sends 'app-will-close' instead of
+    // destroying the window immediately. We have 300ms to:
+    //   1. Notify the remote side we are disconnecting (socket event)
+    //   2. Close the PeerJS call (sends ICE bye packet)
+    //   3. Disconnect the socket gracefully
+    // Then we send 'cleanup-done' back to main.js which destroys the window.
+    // A 2s safety timeout in main.js force-closes if we don't respond.
+    const onWillClose = () => {
+      console.log("🚪 App closing — notifying remote side...");
+      const rid = remoteIdRef.current;
+      if (socket.connected && rid) {
+        socket.emit("remotedisconnected", { remoteId: rid });
+        console.log("📡 Sent remotedisconnected to", rid);
+      }
+      if (callRef.current) {
+        callRef.current.close();
+        callRef.current = null;
+      }
+      // Give socket 300ms to flush the emit packet, then tell main to close
+      setTimeout(() => {
+        socket.disconnect();
+        ipcRenderer.send("cleanup-done");
+      }, 300);
+    };
+    ipcRenderer.on("app-will-close", onWillClose);
+
+    return () => {
+      ipcRenderer.removeListener("app-will-close", onWillClose);
+      socket.disconnect();
+      peer.destroy();
+      stopMic();
+      stopAllAudio();
+    };
   }, []);
 
   const resetSession = useCallback(() => {
