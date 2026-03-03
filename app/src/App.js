@@ -448,7 +448,7 @@ const App = () => {
       dispatch(setRemoteConnectionId(call.peer));
       dispatch(setSessionMode(0));
       dispatch(setSessionStartTime(new Date()));
-      dispatch(setShowSessionDialog(true));
+      dispatch(setShowSessionDialog(false));  // ← don't auto-open Info modal; host sees preview instead
       ipcRenderer.send("session-started");
       setTimeout(() => ipcRenderer.invoke("RESTORE_WIN"), 1000);
       call.on("close", resetSession);

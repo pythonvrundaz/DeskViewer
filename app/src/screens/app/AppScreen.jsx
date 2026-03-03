@@ -282,8 +282,7 @@ const AppScreen = ({
   useEffect(() => {
     const ro = new ResizeObserver(() => {
       const v=videoRef.current; if(!v) return;
-      const r=v.getBoundingClientRect();
-      const w=Math.round(r.width), h=Math.round(r.height);
+      const w=v.offsetWidth, h=v.offsetHeight; if(!w||!h) return;
       if(myCanvasRef.current)    preserveResize(myCanvasRef.current,    w, h);
       if(theirCanvasRef.current) preserveResize(theirCanvasRef.current, w, h);
     });
@@ -608,13 +607,13 @@ const AppScreen = ({
           <video ref={videoRef} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}}/>
 
           {/* HOST strokes layer — bottom, always pointer-events:none */}
-          <canvas ref={theirCanvasRef} style={{position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:2}}/>
+          <canvas ref={theirCanvasRef} style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",display:"block",pointerEvents:"none",zIndex:2}}/>
 
           {/* VIEWER strokes layer — top, interactive when annotating */}
           <canvas ref={myCanvasRef}
             onPointerDown={annoPointerDown} onPointerMove={annoPointerMove}
             onPointerUp={annoPointerUp} onPointerLeave={annoPointerUp}
-            style={{position:"absolute",inset:0,width:"100%",height:"100%",
+            style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",display:"block",
               cursor:annoMode?(annoTool==="eraser"?"cell":annoTool==="text"?"text":"crosshair"):"default",
               pointerEvents:annoMode?"all":"none",touchAction:"none",zIndex:3}}/>
 

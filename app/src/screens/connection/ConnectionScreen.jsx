@@ -68,7 +68,7 @@ const ConnectionScreen = ({
 
   const showSessionDialog = useSelector((s) => s.connection.showSessionDialog);
   const sessionMode       = useSelector((s) => s.connection.sessionMode);
-  const sessionActive     = showSessionDialog && sessionMode === 0;
+  const sessionActive     = sessionMode === 0;   // host session view — independent of Info modal
 
   // ── Session refs ─────────────────────────────────────────────────────────
   const videoRef        = useRef(null);
@@ -131,7 +131,7 @@ const ConnectionScreen = ({
     videoRef.current.srcObject = stream;
     videoRef.current.muted     = true;
     videoRef.current.play()
-      .then(() => setVideoPlaying(true))
+      .then(() => { setVideoPlaying(true); setTimeout(syncCanvasSize, 100); })
       .catch(e  => console.warn("Host preview play():", e.message));
   }, [sessionActive]);
 
@@ -328,11 +328,14 @@ const ConnectionScreen = ({
 
   const syncCanvasSize = useCallback(() => {
     const v=videoRef.current, c=canvasRef.current; if (!v||!c) return;
-    const r=v.getBoundingClientRect();
-    if (c.width!==Math.round(r.width)||c.height!==Math.round(r.height)) {
+    // Use offsetWidth/offsetHeight for real rendered pixel dimensions
+    const w = v.offsetWidth, h = v.offsetHeight;
+    if (!w || !h) return;
+    if (c.width !== w || c.height !== h) {
+      // Preserve existing drawing content while resizing
       const tmp=document.createElement("canvas"); tmp.width=c.width; tmp.height=c.height;
       tmp.getContext("2d").drawImage(c,0,0);
-      c.width=Math.round(r.width); c.height=Math.round(r.height);
+      c.width=w; c.height=h;
       c.getContext("2d").drawImage(tmp,0,0);
     }
   }, []);
@@ -636,7 +639,7 @@ const ConnectionScreen = ({
               style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}}
             />
 
-            {/* Annotation canvas — absolute over video */}
+            {/* Annotation canvas — absolute over video, same pixel size */}
             <canvas
               ref={canvasRef}
               onPointerDown={annoPointerDown}
@@ -644,7 +647,9 @@ const ConnectionScreen = ({
               onPointerUp={annoPointerUp}
               onPointerLeave={annoPointerUp}
               style={{
-                position:"absolute",inset:0,width:"100%",height:"100%",
+                position:"absolute", top:0, left:0,
+                width:"100%", height:"100%",
+                display:"block",
                 cursor:annoMode?(annoTool==="eraser"?"cell":annoTool==="text"?"text":"crosshair"):"default",
                 pointerEvents:annoMode?"all":"none",
                 touchAction:"none",
