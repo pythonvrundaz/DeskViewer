@@ -14,11 +14,6 @@ import CONFIG from "./config";
 
 const { ipcRenderer } = window.require("electron");
 
-// ─────────────────────────────────────────────────────────────────────────────
-// getMicStream — gets real mic or silent fallback.
-// track.enabled stays TRUE at capture time so SDP negotiates sendrecv.
-// The caller mutes the track AFTER the call/answer is committed to SDP.
-// ─────────────────────────────────────────────────────────────────────────────
 const getMicStream = async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -31,11 +26,6 @@ const getMicStream = async () => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// makeDummyVideoTrack — live 30fps 2×2 canvas.
-// Viewer must send a video track so the SDP offer has a video m-line.
-// Without it, the host's screen-share video track has nowhere to map → black.
-// ─────────────────────────────────────────────────────────────────────────────
 const makeDummyVideoTrack = () => {
   const canvas = document.createElement("canvas");
   canvas.width = 2; canvas.height = 2;
@@ -53,30 +43,17 @@ const makeDummyVideoTrack = () => {
   return track;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// unlockAudio — synchronous call inside a user-gesture handler.
-//
-// Chromium blocks audio.play() unless the FIRST play() call happens during
-// a user gesture. ICE takes 5–15s so the gesture expires by then.
-// We pre-unlock the element NOW (inside the gesture) so later play() works.
-//
-// RACE-CONDITION GUARD:
-// We save the unlock stream reference. The .then() callback only nulls
-// srcObject if it still points to our silent stream. If real audio content
-// has already replaced srcObject (fast ICE on same machine), we skip the
-// null so the real content is not wiped.
-// ─────────────────────────────────────────────────────────────────────────────
 const unlockAudio = (audioEl) => {
   if (!audioEl) { console.warn("🔊 unlockAudio: no element"); return; }
   try {
     const ac   = new AudioContext();
-    const buf  = ac.createBuffer(1, 1, ac.sampleRate); // 1 sample ≈ instant
+    const buf  = ac.createBuffer(1, 1, ac.sampleRate);
     const src  = ac.createBufferSource();
     src.buffer = buf;
     const dest       = ac.createMediaStreamDestination();
     src.connect(dest);
     src.start();
-    const unlockStream = dest.stream;  // ← saved for the race-condition check
+    const unlockStream = dest.stream;
     audioEl.srcObject  = unlockStream;
     audioEl.volume     = 0;
     audioEl.muted      = false;
@@ -85,7 +62,6 @@ const unlockAudio = (audioEl) => {
         console.log("🔊 Audio pre-unlocked ✅");
         src.stop();
         ac.close();
-        // Only clear if real content hasn't replaced srcObject yet.
         if (audioEl.srcObject === unlockStream) {
           audioEl.srcObject = null;
           audioEl.volume    = 1.0;
@@ -97,29 +73,10 @@ const unlockAudio = (audioEl) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// buildHostAudioMix — creates an AudioContext mixer that merges:
-//   • desktopAudioTrack (screen audio, always audible)
-//   • micTrack          (host voice, controlled by a GainNode)
-// Returns ONE mixed audio track to add to the combined stream.
-//
-// WHY:
-// The viewer's SDP offer has exactly ONE audio m-line (for the viewer's mic).
-// If the host answers with TWO audio tracks (desktop + mic), PeerJS can only
-// map one of them to that m-line — the other is silently dropped.
-// By mixing both sources into one output track, we stay within the single
-// audio m-line while still sending both desktop audio and mic audio.
-//
-// MUTE CONTROL:
-// Use micGainNode.gain.value = 0/1 instead of micTrack.enabled.
-// Gain nodes produce instant, click-free silence. They also don't affect
-// SDP negotiation (the sender always "sends" — just silence when gain=0).
-// ─────────────────────────────────────────────────────────────────────────────
 const buildHostAudioMix = (desktopAudioTrack, micTrack) => {
   const audioCtx   = new AudioContext();
   const destination = audioCtx.createMediaStreamDestination();
 
-  // Desktop audio (screen sounds) — always audible, no mute control
   if (desktopAudioTrack) {
     const desktopStream  = new MediaStream([desktopAudioTrack]);
     const desktopSource  = audioCtx.createMediaStreamSource(desktopStream);
@@ -127,9 +84,8 @@ const buildHostAudioMix = (desktopAudioTrack, micTrack) => {
     console.log("🔊 Desktop audio connected to mixer ✅");
   }
 
-  // Mic audio — routed through a GainNode so we can mute/unmute cleanly
   const micGain = audioCtx.createGain();
-  micGain.gain.value = 0; // start MUTED — host must explicitly unmute
+  micGain.gain.value = 0;
   if (micTrack) {
     const micStream  = new MediaStream([micTrack]);
     const micSource  = audioCtx.createMediaStreamSource(micStream);
@@ -144,17 +100,6 @@ const buildHostAudioMix = (desktopAudioTrack, micTrack) => {
   return { audioCtx, mixedTrack, micGain };
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// wireHostAudio — connects host's <audio> element to the viewer's mic track.
-// Called AFTER unlockAudio() and BEFORE call.answer().
-// Receives ref OBJECT (not .current) so closures always read the live DOM node.
-//
-// DEDUP guard: both pc.addEventListener("track") and call.on("stream") can
-// fire for the same audio track. audioSetup flag prevents double-setup.
-//
-// FRESH MediaStream: always creates new MediaStream([track]) — never reuses
-// audioEl.srcObject. Guarantees unlockAudio's reference check works.
-// ─────────────────────────────────────────────────────────────────────────────
 const wireHostAudio = (call, audioRef) => {
   let audioSetup = false;
 
@@ -167,7 +112,7 @@ const wireHostAudio = (call, audioRef) => {
     if (!audioEl) { console.warn("🔊 hostAudioRef null"); return; }
 
     console.log(`🔊 Host got viewer audio: state=${track.readyState} enabled=${track.enabled}`);
-    const ms = new MediaStream([track]); // always fresh — see comment above
+    const ms = new MediaStream([track]);
     audioEl.srcObject = ms;
     audioEl.volume    = 1.0;
     audioEl.muted     = false;
@@ -212,14 +157,12 @@ const App = () => {
   const localMicStreamRef = useRef(null);
   const localMicTrackRef  = useRef(null);
   const dummyTrackRef     = useRef(null);
-  const hostAudioCtxRef   = useRef(null); // AudioContext for host mic mixer
-  const hostMicGainRef    = useRef(null); // GainNode — controls host mic volume
-  const localStreamRef    = useRef(null); // host's captured screen stream (for preview + recording)
+  const hostAudioCtxRef   = useRef(null);
+  const hostMicGainRef    = useRef(null);
+  const localStreamRef    = useRef(null);
 
-  // Both audio elements rendered in EVERY return branch — never unmounted.
-  // React reuses the same DOM nodes across screen transitions.
-  const hostAudioRef   = useRef(null);  // host hears viewer's mic
-  const viewerAudioRef = useRef(null);  // viewer hears host's mixed audio
+  const hostAudioRef   = useRef(null);
+  const viewerAudioRef = useRef(null);
 
   const [myId,             setMyId]            = useState("");
   const [currentScreen,    setCurrentScreen]   = useState("home");
@@ -231,7 +174,12 @@ const App = () => {
   const [sources,          setSources]         = useState([]);
   const [showPicker,       setShowPicker]      = useState(false);
   const [pendingCall,      setPendingCall]     = useState(null);
-  const [sessionReset,     setSessionReset]    = useState(0);
+  // FIX: Start sessionReset at null so ConnectionScreen can distinguish
+  // "never reset" (null) from "first reset" (1). The old value of 0 was
+  // falsy, causing the reset effect in ConnectionScreen to be skipped on
+  // the very first disconnect — leaving `connecting:true` and the Remote
+  // Connection ID input unclickable.
+  const [sessionReset, setSessionReset] = useState(null);
 
   const stopMic = useCallback(() => {
     if (localMicStreamRef.current) {
@@ -244,7 +192,6 @@ const App = () => {
       dummyTrackRef.current.stop();
       dummyTrackRef.current = null;
     }
-    // Close host audio mixer
     if (hostAudioCtxRef.current) {
       hostAudioCtxRef.current.close().catch(() => {});
       hostAudioCtxRef.current = null;
@@ -289,19 +236,6 @@ const App = () => {
     socket.on("keyup",             e => ipcRenderer.send("keyup",             e));
     socket.on("stream-resolution", e => ipcRenderer.send("stream-resolution", e));
 
-    // ── Clipboard sync relay ───────────────────────────────────────────────
-    // The socket server relays clipboard-sync events between viewer and host.
-    // App.js is the relay point — it re-emits to the server with remoteId.
-    // The actual read/write of clipboard happens in the component that
-    // receives the event (ConnectionScreen for host, AppScreen for viewer).
-    // Nothing needed here — both sides listen via socketRef directly.
-
-    // ── Annotation relay ───────────────────────────────────────────────────
-    // annotation-frame: viewer draws → server → host sees canvas overlay
-    // annotation-clear: viewer clears → server → host clears overlay
-    // The server must relay these events just like chat-message.
-    // No action needed in App.js — components handle via socketRef.
-
     const peer = new Peer(uid, {
       host: CONFIG.PEER_HOST, port: CONFIG.PEER_PORT,
       path: CONFIG.PEER_PATH, secure: CONFIG.PEER_SECURE, debug: 2,
@@ -321,14 +255,6 @@ const App = () => {
 
     peerInstance.current = peer;
 
-    // ── GRACEFUL CLOSE on Electron X button ──────────────────────────────
-    // When the user clicks X, main.js sends 'app-will-close' instead of
-    // destroying the window immediately. We have 300ms to:
-    //   1. Notify the remote side we are disconnecting (socket event)
-    //   2. Close the PeerJS call (sends ICE bye packet)
-    //   3. Disconnect the socket gracefully
-    // Then we send 'cleanup-done' back to main.js which destroys the window.
-    // A 2s safety timeout in main.js force-closes if we don't respond.
     const onWillClose = () => {
       console.log("🚪 App closing — notifying remote side...");
       const rid = remoteIdRef.current;
@@ -340,7 +266,6 @@ const App = () => {
         callRef.current.close();
         callRef.current = null;
       }
-      // Give socket 300ms to flush the emit packet, then tell main to close
       setTimeout(() => {
         socket.disconnect();
         ipcRenderer.send("cleanup-done");
@@ -358,7 +283,15 @@ const App = () => {
   }, []);
 
   const resetSession = useCallback(() => {
+    // FIX: Always release global capture FIRST before any state changes.
+    // This is critical — if controlActive is still true in electron.js,
+    // it intercepts mouse clicks via globalShortcut, making the Remote
+    // Connection ID input appear unclickable after returning to home screen.
     ipcRenderer.send("set-global-capture", false);
+
+    // FIX: Also send session-ended so electron.js clears sessionActive flag
+    ipcRenderer.send("session-ended");
+
     setCurrentScreen("home");
     setRemoteStream(null);
     remoteStreamRef.current  = null;
@@ -366,19 +299,23 @@ const App = () => {
     remoteIdRef.current      = "";
     dispatch(setShowSessionDialog(false));
     dispatch(setSessionMode(-1));
-    ipcRenderer.send("session-ended");
     stopMic();
     stopAllAudio();
-    setSessionReset(n => n + 1);
+
+    // FIX: Increment from null-safe base. Using functional update ensures
+    // we always get a truthy number (1, 2, 3...) that ConnectionScreen's
+    // useEffect will never skip due to falsy check.
+    setSessionReset(prev => (prev === null ? 1 : prev + 1));
+
     console.log("🔄 Session reset");
   }, [stopMic, stopAllAudio]);
 
-  // ── HOST: Accept — user gesture — unlock host audio NOW ──────────────────
+  // ── HOST: Accept ──────────────────────────────────────────────────────────
   const acceptCall = useCallback(async () => {
     const call = incomingCall;
     setIncomingCall(null); setIncomingCallerId("");
     setPendingCall(call);
-    unlockAudio(hostAudioRef.current); // sync, inside gesture ✅
+    unlockAudio(hostAudioRef.current);
     const srcs = await ipcRenderer.invoke("GET_SOURCES");
     setSources(srcs); setShowPicker(true);
   }, [incomingCall]);
@@ -420,22 +357,14 @@ const App = () => {
       localMicStreamRef.current = micStream;
       localMicTrackRef.current  = micTrack;
 
-      // ── BUILD AUDIO MIXER ──────────────────────────────────────────────
-      // Merges desktopAudio + mic into ONE output track.
-      // This is critical: viewer's SDP offer has ONE audio m-line.
-      // Sending two separate audio tracks causes the second to be silently
-      // dropped by PeerJS (no m-line to map it to). The mixer solves this.
-      // Mic starts at gain=0 (muted). Host clicks "Unmute" to set gain=1.
       const { audioCtx, mixedTrack, micGain } = buildHostAudioMix(desktopAudioTrack, micTrack);
       hostAudioCtxRef.current = audioCtx;
       hostMicGainRef.current  = micGain;
 
-      // Combined: screenVideo + ONE mixed audio track (fits the 2 SDP m-lines)
       const combined = new MediaStream();
       if (screenVideoTrack) combined.addTrack(screenVideoTrack);
       combined.addTrack(mixedTrack);
 
-      // Store for host preview + recording in ConnectionScreen
       localStreamRef.current = combined;
 
       console.log("📡 Host answering:", combined.getTracks().map(t => `${t.kind} label="${t.label}"`));
@@ -448,7 +377,7 @@ const App = () => {
       dispatch(setRemoteConnectionId(call.peer));
       dispatch(setSessionMode(0));
       dispatch(setSessionStartTime(new Date()));
-      dispatch(setShowSessionDialog(false));  // ← don't auto-open Info modal; host sees preview instead
+      dispatch(setShowSessionDialog(false));
       ipcRenderer.send("session-started");
       setTimeout(() => ipcRenderer.invoke("RESTORE_WIN"), 1000);
       call.on("close", resetSession);
@@ -465,7 +394,6 @@ const App = () => {
     const peer = peerInstance.current;
     if (!peer || peer.destroyed) { alert("Not connected to server yet."); return; }
 
-    // Sync — inside user gesture before any await
     unlockAudio(viewerAudioRef.current);
 
     dispatch(setRemoteConnectionId(remoteId));
@@ -488,7 +416,6 @@ const App = () => {
     const call = peer.call(String(remoteId), outStream);
     if (!call) { alert("Could not reach that peer."); return; }
 
-    // Mute viewer mic after 200ms — lets PeerJS finish SDP/addTrack queuing
     setTimeout(() => {
       if (localMicTrackRef.current) {
         localMicTrackRef.current.enabled = false;
@@ -522,7 +449,6 @@ const App = () => {
     resetSession();
   }, [resetSession]);
 
-  // ── BOTH AUDIO ELEMENTS ALWAYS RENDERED ──────────────────────────────────
   const audioElements = (
     <>
       <audio ref={hostAudioRef}   style={{ display:"none" }} />

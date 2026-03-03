@@ -155,10 +155,10 @@ const ConnectionScreen = ({
   }, [annoMode]);
 
   // ── Session reset ─────────────────────────────────────────────────────────
-  // FIX: Changed condition from `if (!sessionReset)` to `if (sessionReset === null)`
-  // The old check used falsy evaluation, so when sessionReset was 0 (initial counter
-  // value) it would skip the reset entirely — leaving `connecting: true` and making
-  // the Remote Connection ID input unclickable after a visitor disconnects and returns.
+  // FIX: sessionReset starts as null in App.js (not 0).
+  // We skip the effect on initial mount (null) but run it for every real reset (1, 2, 3...).
+  // Previously sessionReset started at 0 which is falsy — so `if (!sessionReset)` skipped
+  // the very first reset, leaving `connecting:true` and the input field unclickable.
   useEffect(() => {
     if (sessionReset === null || sessionReset === undefined) return;
     setMessages([]); setShowChat(false); setUnread(0);
