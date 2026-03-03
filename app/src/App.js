@@ -161,8 +161,14 @@ const App = () => {
   const hostMicGainRef    = useRef(null);
   const localStreamRef    = useRef(null);
 
-  const hostAudioRef   = useRef(null);
-  const viewerAudioRef = useRef(null);
+  const hostAudioRef    = useRef(null);
+  const viewerAudioRef  = useRef(null);
+  // Guard ref to prevent resetSession from running twice when the disconnecting
+  // side calls callRef.current.close() — which fires call.on("close") AND then
+  // resetSession() is called manually right after. Without this guard the two
+  // rapid back-to-back resets leave `connecting:true` in ConnectionScreen,
+  // making the Remote Connection ID input unclickable.
+  const isResettingRef  = useRef(false);
 
   const [myId,             setMyId]            = useState("");
   const [currentScreen,    setCurrentScreen]   = useState("home");
@@ -283,13 +289,19 @@ const App = () => {
   }, []);
 
   const resetSession = useCallback(() => {
-    // FIX: Always release global capture FIRST before any state changes.
-    // This is critical — if controlActive is still true in electron.js,
-    // it intercepts mouse clicks via globalShortcut, making the Remote
-    // Connection ID input appear unclickable after returning to home screen.
-    ipcRenderer.send("set-global-capture", false);
+    // GUARD: prevent double execution.
+    // When the LOCAL side clicks Disconnect, handleDisconnect calls
+    // callRef.current.close() which synchronously fires call.on("close"),
+    // which calls resetSession() — then handleDisconnect calls resetSession()
+    // again manually. Two rapid resets corrupt state and leave `connecting:true`
+    // in ConnectionScreen, making the Remote Connection ID input unclickable.
+    if (isResettingRef.current) {
+      console.log("🔄 resetSession: already resetting, skipping duplicate call");
+      return;
+    }
+    isResettingRef.current = true;
 
-    // FIX: Also send session-ended so electron.js clears sessionActive flag
+    ipcRenderer.send("set-global-capture", false);
     ipcRenderer.send("session-ended");
 
     setCurrentScreen("home");
@@ -301,11 +313,10 @@ const App = () => {
     dispatch(setSessionMode(-1));
     stopMic();
     stopAllAudio();
-
-    // FIX: Increment from null-safe base. Using functional update ensures
-    // we always get a truthy number (1, 2, 3...) that ConnectionScreen's
-    // useEffect will never skip due to falsy check.
     setSessionReset(prev => (prev === null ? 1 : prev + 1));
+
+    // Release the guard after a short delay so the next NEW session can reset again
+    setTimeout(() => { isResettingRef.current = false; }, 500);
 
     console.log("🔄 Session reset");
   }, [stopMic, stopAllAudio]);
@@ -445,7 +456,13 @@ const App = () => {
   const handleDisconnect = useCallback(() => {
     const rid = remoteIdRef.current;
     if (socketRef.current && rid) socketRef.current.emit("remotedisconnected", { remoteId: rid });
-    if (callRef.current) { callRef.current.close(); callRef.current = null; }
+    // Set isResettingRef BEFORE calling close() so when call.on("close") fires
+    // and calls resetSession(), the guard lets it through as the FIRST call,
+    // then blocks the manual resetSession() below as the duplicate.
+    // Either way only one reset runs — the input is always left clickable.
+    const call = callRef.current;
+    callRef.current = null;
+    if (call) call.close();
     resetSession();
   }, [resetSession]);
 
