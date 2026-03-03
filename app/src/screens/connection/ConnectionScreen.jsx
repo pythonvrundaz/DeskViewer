@@ -53,8 +53,8 @@ const fmtRelTime   = (ts) => { const m=Math.floor((Date.now()-ts)/60000); if(m<1
 const ConnectionScreen = ({
   myId, socketRef, remoteIdRef, userIdRef, localMicTrackRef,
   hostMicGainRef,
-  localStreamRef,    // NEW — ref to host's captured screen MediaStream
-  callRef,           // NEW — ref to the active PeerJS call (for quality stats)
+  localStreamRef,    // ref to host's captured screen MediaStream
+  callRef,           // ref to the active PeerJS call (for quality stats)
   incomingCall, incomingCallerId, acceptCall, rejectCall,
   startCall, onEndSession, callRejected, sessionReset,
 }) => {
@@ -68,7 +68,7 @@ const ConnectionScreen = ({
 
   const showSessionDialog = useSelector((s) => s.connection.showSessionDialog);
   const sessionMode       = useSelector((s) => s.connection.sessionMode);
-  const sessionActive     = sessionMode === 0;   // host session view — independent of Info modal
+  const sessionActive     = sessionMode === 0;
 
   // ── Session refs ─────────────────────────────────────────────────────────
   const videoRef        = useRef(null);
@@ -155,18 +155,30 @@ const ConnectionScreen = ({
   }, [annoMode]);
 
   // ── Session reset ─────────────────────────────────────────────────────────
+  // FIX: Changed condition from `if (!sessionReset)` to `if (sessionReset === null)`
+  // The old check used falsy evaluation, so when sessionReset was 0 (initial counter
+  // value) it would skip the reset entirely — leaving `connecting: true` and making
+  // the Remote Connection ID input unclickable after a visitor disconnects and returns.
   useEffect(() => {
-    if (!sessionReset) return;
+    if (sessionReset === null || sessionReset === undefined) return;
     setMessages([]); setShowChat(false); setUnread(0);
     setChatInput(""); setConnecting(false); setMuted(true);
     setVideoPlaying(false); setAnnoMode(false); setQuality(null);
+    setRemoteId("");
     stopRecording();
     const c = canvasRef.current;
     if (c) c.getContext("2d").clearRect(0,0,c.width,c.height);
   }, [sessionReset]);
 
   useEffect(() => { if (showCopied) { const t=setTimeout(()=>setShowCopied(false),2000); return ()=>clearTimeout(t); } }, [showCopied]);
-  useEffect(() => { if (callRejected) setConnecting(false); }, [callRejected]);
+
+  // FIX: Always reset connecting when callRejected fires, and also clear remoteId
+  useEffect(() => {
+    if (callRejected) {
+      setConnecting(false);
+      setRemoteId("");
+    }
+  }, [callRejected]);
 
   // ── CLIPBOARD: receive viewer's clipboard ─────────────────────────────────
   useEffect(() => {
@@ -321,18 +333,11 @@ const ConnectionScreen = ({
   const qualityLabel = () => { if (!quality?.rtt) return "—"; if (quality.rtt<80) return "Good"; if (quality.rtt<200) return "Fair"; return "Poor"; };
 
   // ── ANNOTATION CANVAS ─────────────────────────────────────────────────────
-  // Syncs size to video via ResizeObserver.
-  // HOST draws in HOST_COLOR (blue).
-  // Incoming annotation-frame from viewer is painted directly onto canvas.
-  // annotation-clear from viewer → clear our canvas AND re-emit so viewer clears too.
-
   const syncCanvasSize = useCallback(() => {
     const v=videoRef.current, c=canvasRef.current; if (!v||!c) return;
-    // Use offsetWidth/offsetHeight for real rendered pixel dimensions
     const w = v.offsetWidth, h = v.offsetHeight;
     if (!w || !h) return;
     if (c.width !== w || c.height !== h) {
-      // Preserve existing drawing content while resizing
       const tmp=document.createElement("canvas"); tmp.width=c.width; tmp.height=c.height;
       tmp.getContext("2d").drawImage(c,0,0);
       c.width=w; c.height=h;
@@ -347,11 +352,10 @@ const ConnectionScreen = ({
   }, [syncCanvasSize]);
 
   // Receive annotation-frame from VIEWER — draw onto our canvas
-  // The viewer emits with role:"viewer" — we only process those
   useEffect(() => {
     const socket=socketRef?.current; if (!socket) return;
     const onFrame = ({ role, dataUrl, clear }) => {
-      if (role !== "viewer") return;   // ignore our own echoes from server
+      if (role !== "viewer") return;
       const c=canvasRef.current; if (!c) return;
       if (clear) { c.getContext("2d").clearRect(0,0,c.width,c.height); return; }
       if (!dataUrl) return;
@@ -431,8 +435,6 @@ const ConnectionScreen = ({
     const c=canvasRef.current; if (!c) return;
     c.getContext("2d").clearRect(0,0,c.width,c.height);
     const s=socketRef?.current, rid=String(remoteIdRef?.current||""), uid=String(userIdRef?.current||"");
-    // Use same protocol as AppScreen: annotation-frame with clear:true + role:"host"
-    // This clears the viewer's "theirCanvas" (host strokes layer)
     if (s?.connected&&rid) s.emit("annotation-frame",{remoteId:rid,userId:uid,role:"host",clear:true});
   };
 
@@ -494,7 +496,6 @@ const ConnectionScreen = ({
             <span style={{color:"#d1d5db",fontSize:13,fontWeight:500}}>Sharing with: {remoteIdRef.current}</span>
             <span style={{background:"rgba(59,130,246,0.2)",color:"#93c5fd",fontSize:10,fontWeight:700,borderRadius:5,padding:"2px 8px",border:"1px solid rgba(59,130,246,0.3)"}}>HOST</span>
 
-            {/* Recording badge */}
             {recording&&(
               <span style={{display:"flex",alignItems:"center",gap:5,background:"rgba(220,38,38,0.2)",border:"1px solid #ef4444",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700,color:"#fca5a5"}}>
                 <span style={{width:7,height:7,borderRadius:"50%",background:"#ef4444",animation:"pulse 1s infinite",display:"inline-block"}}/>
@@ -502,7 +503,6 @@ const ConnectionScreen = ({
               </span>
             )}
 
-            {/* Quality */}
             {quality&&(
               <span title={`RTT: ${quality.rtt??'—'}ms | FPS: ${quality.fps??'—'} | ${quality.kbps??'—'} kbps`}
                 style={{display:"flex",alignItems:"center",gap:4,background:"rgba(255,255,255,0.05)",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:600,color:qualityColor(),cursor:"default",border:`1px solid ${qualityColor()}44`}}>
@@ -513,7 +513,6 @@ const ConnectionScreen = ({
               </span>
             )}
 
-            {/* Annotation active */}
             {annoMode&&(
               <span style={{display:"flex",alignItems:"center",gap:4,background:"rgba(59,130,246,0.25)",border:"1px solid rgba(59,130,246,0.4)",borderRadius:5,padding:"2px 8px",fontSize:10,fontWeight:700,color:"#bfdbfe"}}>
                 ✏️ ANNOTATING (blue)
@@ -527,7 +526,6 @@ const ConnectionScreen = ({
               <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M20 12H4"/></svg>
             )}
 
-            {/* Mic */}
             <button onClick={toggleMute} style={tbtn(muted?"#374151":"#059669")}>
               {muted
                 ? <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/><line x1="3" y1="3" x2="21" y2="21" strokeWidth={2} strokeLinecap="round"/></svg>
@@ -536,13 +534,11 @@ const ConnectionScreen = ({
               {muted?"Unmute Mic":"Mute Mic"}
             </button>
 
-            {/* Annotate */}
             <button onClick={()=>setAnnoMode(v=>!v)} style={tbtn(annoMode?"#1d4ed8":"#374151",annoMode)}>
               <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
               Annotate
             </button>
 
-            {/* Record */}
             <button onClick={()=>recording?stopRecording():startRecording()} style={tbtn(recording?"#dc2626":"#374151",recording)}>
               {recording
                 ? <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
@@ -551,19 +547,16 @@ const ConnectionScreen = ({
               {recording?"Stop Rec":"Record"}
             </button>
 
-            {/* Chat */}
             {ibtn("Chat",toggleChat,
               <svg style={{width:14,height:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>,
               unread
             )}
 
-            {/* Info */}
             <button onClick={()=>dispatch(setShowSessionDialog(true))} style={tbtn("#0284c7")}>
               <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
               Info
             </button>
 
-            {/* Stop sharing */}
             <button onClick={handleDisconnect} style={tbtn("#dc2626")}>
               <svg style={{width:13,height:13}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
               Stop Sharing
@@ -574,7 +567,6 @@ const ConnectionScreen = ({
         {/* ANNOTATION TOOLBAR */}
         {annoMode&&(
           <div style={{flexShrink:0,display:"flex",alignItems:"center",gap:10,padding:"6px 14px",background:"rgba(10,20,50,0.97)",borderBottom:"1px solid rgba(59,130,246,0.15)",flexWrap:"wrap"}}>
-            {/* Tools */}
             <div style={{display:"flex",gap:4}}>
               {ANNO_TOOLS.map(t=>(
                 <button key={t} onClick={()=>setAnnoTool(t)}
@@ -584,7 +576,6 @@ const ConnectionScreen = ({
               ))}
             </div>
             <div style={{width:1,height:20,background:"rgba(255,255,255,0.15)"}}/>
-            {/* Color legend */}
             <div style={{display:"flex",alignItems:"center",gap:8,fontSize:11,color:"#9ca3af"}}>
               <span style={{display:"flex",alignItems:"center",gap:4}}>
                 <span style={{width:10,height:10,borderRadius:"50%",background:HOST_COLOR,display:"inline-block",border:"1.5px solid #fff"}}/>
@@ -596,7 +587,6 @@ const ConnectionScreen = ({
               </span>
             </div>
             <div style={{width:1,height:20,background:"rgba(255,255,255,0.15)"}}/>
-            {/* Stroke sizes */}
             <div style={{display:"flex",gap:4,alignItems:"center"}}>
               {ANNO_SIZES.map(sz=>(
                 <button key={sz} onClick={()=>setAnnoSize(sz)}
@@ -605,7 +595,6 @@ const ConnectionScreen = ({
                 </button>
               ))}
             </div>
-            {/* Text input */}
             {annoTool==="text"&&(
               <input ref={annoInputRef} value={annoTextVal} onChange={e=>setAnnoTextVal(e.target.value)}
                 onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();annoCommitText();}if(e.key==="Escape")setAnnoTextVal("");}}
@@ -626,7 +615,6 @@ const ConnectionScreen = ({
           {/* VIDEO + ANNOTATION CANVAS */}
           <div style={{flex:1,position:"relative",background:"#000",overflow:"hidden"}}>
 
-            {/* Loading overlay */}
             {!videoPlaying&&(
               <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"#0a0a0a",zIndex:5}}>
                 <svg style={{width:48,height:48,color:HOST_COLOR,marginBottom:16}} viewBox="0 0 24 24" fill="none"><circle style={{opacity:0.25}} cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path style={{opacity:0.75}} fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
@@ -639,7 +627,6 @@ const ConnectionScreen = ({
               style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}}
             />
 
-            {/* Annotation canvas — absolute over video, same pixel size */}
             <canvas
               ref={canvasRef}
               onPointerDown={annoPointerDown}
@@ -777,13 +764,37 @@ const ConnectionScreen = ({
         </div>
         <div style={hs.field}>
           <label style={hs.label}>Remote Connection ID</label>
-          <input type="text" placeholder="Enter 10-digit ID" value={remoteId} onChange={e=>setRemoteId(e.target.value.trim())} onKeyDown={e=>e.key==="Enter"&&!connecting&&handleConnect()} style={hs.input}/>
+          {/* FIX: Input is now always interactive — connecting state is properly
+              reset when a session ends, so this input is never stuck as disabled */}
+          <input
+            type="text"
+            placeholder="Enter 10-digit ID"
+            value={remoteId}
+            onChange={e => setRemoteId(e.target.value.trim())}
+            onKeyDown={e => e.key==="Enter" && !connecting && handleConnect()}
+            disabled={connecting}
+            style={{
+              ...hs.input,
+              opacity: connecting ? 0.6 : 1,
+              cursor: connecting ? "not-allowed" : "text",
+            }}
+          />
         </div>
         <div style={hs.field}>
           <button onClick={()=>handleConnect()} disabled={connecting} style={hs.btn("#dc2626",connecting)}>
             {connecting?"Waiting for host...":"Connect"}
           </button>
-          {connecting&&<p style={{textAlign:"center",fontSize:12,color:"#6b7280",marginTop:8}}>Waiting for the host to accept...</p>}
+          {connecting&&(
+            <p style={{textAlign:"center",fontSize:12,color:"#6b7280",marginTop:8}}>
+              Waiting for the host to accept...
+              <button
+                onClick={()=>setConnecting(false)}
+                style={{marginLeft:8,background:"none",border:"none",color:"#dc2626",cursor:"pointer",fontSize:12,fontWeight:600,padding:0,textDecoration:"underline"}}
+              >
+                Cancel
+              </button>
+            </p>
+          )}
         </div>
 
         {/* RECENT CONNECTIONS */}
