@@ -299,14 +299,32 @@ const App = () => {
 
     peerInstance.current = peer;
 
-    // CORNER CASE E: app closed while session active or connecting
+    // CORNER CASE E: app closed while session active or connecting.
+    // CRITICAL: We must wait for the server to relay "remotedisconnected" to
+    // the remote peer BEFORE disconnecting the socket.
+    // Old bug: socket.disconnect() was called 300ms after emit — if the server
+    // hadn't relayed yet, the message was lost and the other side stayed stuck.
+    // Fix: emit → wait 800ms for relay to complete → THEN disconnect → cleanup-done
     const onWillClose = () => {
       const rid = remoteIdRef.current;
-      if (socket.connected && rid) socket.emit("remotedisconnected", { remoteId: rid });
       const call = callRef.current; callRef.current = null;
       closeCall(call);
       stopMic();
-      setTimeout(() => { socket.disconnect(); ipcRenderer.send("cleanup-done"); }, 300);
+
+      if (socket.connected && rid) {
+        // Emit notification to server — server relays to remote peer's room
+        socket.emit("remotedisconnected", { remoteId: rid });
+        console.log("[onWillClose] Sent remotedisconnected to", rid);
+        // Give the server enough time to relay the message before we cut the socket
+        setTimeout(() => {
+          socket.disconnect();
+          ipcRenderer.send("cleanup-done");
+        }, 800);
+      } else {
+        // Not in a session — disconnect immediately
+        socket.disconnect();
+        ipcRenderer.send("cleanup-done");
+      }
     };
     ipcRenderer.on("app-will-close", onWillClose);
 

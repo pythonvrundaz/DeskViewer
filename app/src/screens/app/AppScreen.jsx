@@ -58,32 +58,18 @@ const AppScreen = ({
   const recChunksRef = useRef([]);
   const recTimerRef  = useRef(null);
 
-  // ── Viewer Info modal ─────────────────────────────────────────────────────
-  const [sessionDuration, setSessionDuration] = useState(0);
-  useEffect(() => {
-    if (!showSessionDialog || !sessionStartTime) return;
-    const start = new Date(sessionStartTime).getTime();
-    const tick = () => setSessionDuration(Math.floor((Date.now() - start) / 1000));
-    tick();
-    const iv = setInterval(tick, 1000);
-    return () => clearInterval(iv);
-  }, [showSessionDialog, sessionStartTime]);
-  const fmtSessionDur = (s) => {
-    const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
-    return h>0?`${h}h ${m}m ${sec}s`:m>0?`${m}m ${sec}s`:`${sec}s`;
-  };
-
+  
   const drawingRef   = useRef(false);
   const startRef     = useRef({x:0,y:0});
   const snapRef      = useRef(null);
   const textPosRef   = useRef(null);
   const annoInputRef = useRef(null);
-
+  
   const showSessionDialog  = useSelector((s) => s.connection.showSessionDialog);
   const sessionStartTime   = useSelector((s) => s.connection.sessionStartTime);
   const userConnectionId   = useSelector((s) => s.connection.userConnectionId);
   const remoteConnectionId = useSelector((s) => s.connection.remoteConnectionId);
-
+  
   const [videoPlaying,   setVideoPlaying]   = useState(false);
   const [controlEnabled, setControlEnabled] = useState(false);
   const [muted,          setMuted]          = useState(true);
@@ -99,6 +85,21 @@ const AppScreen = ({
   const chatEndRef   = useRef(null);
   const fileInputRef = useRef(null);
   const textareaRef  = useRef(null);
+  
+  // ── Viewer Info modal ─────────────────────────────────────────────────────
+  const [sessionDuration, setSessionDuration] = useState(0);
+  useEffect(() => {
+    if (!showSessionDialog || !sessionStartTime) return;
+    const start = new Date(sessionStartTime).getTime();
+    const tick = () => setSessionDuration(Math.floor((Date.now() - start) / 1000));
+    tick();
+    const iv = setInterval(tick, 1000);
+    return () => clearInterval(iv);
+  }, [showSessionDialog, sessionStartTime]);
+  const fmtSessionDur = (s) => {
+    const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
+    return h>0?`${h}h ${m}m ${sec}s`:m>0?`${m}m ${sec}s`:`${sec}s`;
+  };
 
   const [recording,   setRecording]   = useState(false);
   const [recDuration, setRecDuration] = useState(0);

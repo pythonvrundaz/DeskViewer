@@ -64,12 +64,13 @@ function createWindow() {
     // Tell the renderer to: emit remotedisconnected, close call, then send cleanup-done
     mainWindow.webContents.send("app-will-close");
 
-    // Safety: if renderer doesn't respond within 3 s, force quit anyway
+    // Safety: if renderer doesn't respond within 4 s, force quit anyway.
+    // Must be > 800ms (the socket relay wait in App.js onWillClose)
     cleanupTimer = setTimeout(() => {
       console.warn("[electron] Cleanup timed out — force quitting");
       closeAllowed = true;
       mainWindow?.destroy();
-    }, 3000);
+    }, 4000);
   });
 
   mainWindow.on("minimize", () => mainWindow.webContents.send("window-minimized"));
