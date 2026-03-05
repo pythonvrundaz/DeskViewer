@@ -165,6 +165,13 @@ const App = () => {
   // PeerJS call and stop mic so host doesn't receive a ghost ring.
   const cancelConnecting = useCallback(() => {
     isConnectingRef.current = false;
+    // Notify host via socket FIRST — this is the reliable fast path to dismiss
+    // the host modal/picker. PeerJS call.on("close") alone is not guaranteed
+    // to fire quickly enough on the host side.
+    const rid = remoteIdRef.current;
+    if (socketRef.current?.connected && rid) {
+      socketRef.current.emit("remotedisconnected", { remoteId: rid });
+    }
     const call = callRef.current; callRef.current = null;
     closeCall(call);
     stopMic();
@@ -189,8 +196,22 @@ const App = () => {
     socket.on("disconnect",    r  => console.warn("🔴 Socket:", r));
     socket.on("connect_error", e  => console.error("🔴 Socket:", e.message));
 
-    // CORNER CASE: remote side closed the app or lost connection mid-session
-    socket.on("remotedisconnected", () => setSessionEnded(true));
+    // CORNER CASE: remote side disconnected.
+    // This fires in THREE scenarios that all need different handling:
+    // 1. Active session — remote closed app or clicked disconnect
+    // 2. Viewer cancelled while host was showing the approve/reject modal
+    // 3. Viewer cancelled while host had already accepted and source picker was open
+    // For all three: clear modal + picker state, then trigger session reset.
+    socket.on("remotedisconnected", () => {
+      // Always dismiss incoming call modal and source picker first —
+      // viewer may have cancelled before host responded
+      setIncomingCall(prev => { if (prev) { closeCall(prev); } return null; });
+      setIncomingCallerId("");
+      setShowPicker(false);
+      setPendingCall(prev => { if (prev) { closeCall(prev); } return null; });
+      // Then trigger full session reset (handles active session + connecting state)
+      setSessionEnded(true);
+    });
 
     // CORNER CASE: host rejected the call (or cancelled source picker)
     // Previously: only set callRejected+setCurrentScreen, never called resetSession
@@ -253,9 +274,10 @@ const App = () => {
       }
     });
 
-    // CORNER CASE D: host is already in a session when another viewer calls
-    // Without this guard, the host would see a second incoming call dialog
-    // while they're actively sharing. Auto-reject so the host isn't interrupted.
+    // CORNER CASE D: host is already in a session when another viewer calls — auto-reject
+    // CORNER CASE NEW: viewer cancels while host is looking at the modal.
+    // We attach a call.on("close") listener so if the viewer cancels (closing
+    // the PeerJS connection) the modal automatically disappears on the host side.
     peer.on("call", call => {
       if (callRef.current) {
         console.warn("📵 Busy — auto-rejecting call from", call.peer);
@@ -263,6 +285,14 @@ const App = () => {
         socket.emit("callrejected", { remoteId: call.peer });
         return;
       }
+
+      // Listen for viewer-side cancel: if the call closes before host accepts,
+      // dismiss the modal so host isn't left with a zombie dialog
+      call.on("close", () => {
+        setIncomingCall(prev => (prev === call ? null : prev));
+        setIncomingCallerId(prev => (prev === call.peer ? "" : prev));
+      });
+
       setIncomingCall(call);
       setIncomingCallerId(call.peer);
     });
@@ -437,10 +467,17 @@ const App = () => {
     call.on("close", () => resetSession());
   }, [resetSession, stopMic]);
 
-  // ── Session ended by remote side (socket event) ───────────────────────────
+  // ── Session ended by remote side (socket event) ─────────────────────────
+  // This triggers from remotedisconnected socket event which now also clears
+  // incomingCall and pendingCall state (see socket handler above).
+  // We only show the "disconnected" error if we were in an active session
+  // (callRef existed) — not if the host was just on the home screen.
   useEffect(() => {
     if (!sessionEnded) return;
-    resetSession({ type: "disconnected", message: "The other side ended the session." });
+    const wasInSession = !!callRef.current;
+    const call = callRef.current; callRef.current = null;
+    closeCall(call);
+    resetSession(wasInSession ? { type: "disconnected", message: "The other side ended the session." } : null);
     setSessionEnded(false);
   }, [sessionEnded]);
 

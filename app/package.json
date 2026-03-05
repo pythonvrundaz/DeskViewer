@@ -5,7 +5,7 @@
   "private": true,
   "description": "Desktop remote viewer app",
   "author": "Your Name <youremail@example.com>",
-  "main": "electron.js",
+  "main": "public/electron.js",
   "scripts": {
     "react-start": "react-scripts start",
     "react-build": "react-scripts build",
