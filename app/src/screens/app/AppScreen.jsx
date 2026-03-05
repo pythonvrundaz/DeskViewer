@@ -58,13 +58,31 @@ const AppScreen = ({
   const recChunksRef = useRef([]);
   const recTimerRef  = useRef(null);
 
+  // ── Viewer Info modal ─────────────────────────────────────────────────────
+  const [sessionDuration, setSessionDuration] = useState(0);
+  useEffect(() => {
+    if (!showSessionDialog || !sessionStartTime) return;
+    const start = new Date(sessionStartTime).getTime();
+    const tick = () => setSessionDuration(Math.floor((Date.now() - start) / 1000));
+    tick();
+    const iv = setInterval(tick, 1000);
+    return () => clearInterval(iv);
+  }, [showSessionDialog, sessionStartTime]);
+  const fmtSessionDur = (s) => {
+    const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
+    return h>0?`${h}h ${m}m ${sec}s`:m>0?`${m}m ${sec}s`:`${sec}s`;
+  };
+
   const drawingRef   = useRef(false);
   const startRef     = useRef({x:0,y:0});
   const snapRef      = useRef(null);
   const textPosRef   = useRef(null);
   const annoInputRef = useRef(null);
 
-  const showSessionDialog = useSelector((s) => s.connection.showSessionDialog);
+  const showSessionDialog  = useSelector((s) => s.connection.showSessionDialog);
+  const sessionStartTime   = useSelector((s) => s.connection.sessionStartTime);
+  const userConnectionId   = useSelector((s) => s.connection.userConnectionId);
+  const remoteConnectionId = useSelector((s) => s.connection.remoteConnectionId);
 
   const [videoPlaying,   setVideoPlaying]   = useState(false);
   const [controlEnabled, setControlEnabled] = useState(false);
@@ -639,7 +657,55 @@ const AppScreen = ({
         )}
       </div>
 
-      {showSessionDialog&&!controlEnabled&&<SessionInfo socket={socketRef.current} onEndSession={onEndSession}/>}
+      {showSessionDialog&&!controlEnabled&&(
+        <div style={{position:"fixed",inset:0,zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.7)"}}>
+          <div style={{background:"#111827",borderRadius:16,boxShadow:"0 25px 60px rgba(0,0,0,0.6)",width:420,overflow:"hidden",border:"1px solid rgba(124,58,237,0.25)"}}>
+            {/* Header — viewer uses purple accent to match viewer theme */}
+            <div style={{background:"linear-gradient(135deg,#1e1035,#7c3aed)",padding:"20px 24px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div style={{display:"flex",alignItems:"center",gap:12}}>
+                <div style={{width:40,height:40,borderRadius:"50%",background:"rgba(255,255,255,0.15)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                  <svg style={{width:20,height:20,color:"#fff"}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                </div>
+                <div>
+                  <div style={{color:"#fff",fontWeight:700,fontSize:16}}>Session Info</div>
+                  <div style={{color:"rgba(255,255,255,0.6)",fontSize:12}}>Active viewing session</div>
+                </div>
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <button title="Minimize to taskbar" onClick={()=>ipcRenderer.send("minimize-to-taskbar")} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:8,padding:"6px 10px",color:"#fff",cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",gap:5}}>
+                  <svg style={{width:12,height:12}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M20 12H4"/></svg>
+                  Minimize
+                </button>
+                <button onClick={()=>dispatch(setShowSessionDialog(false))} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:8,padding:"6px 10px",color:"#fff",cursor:"pointer",fontSize:18,lineHeight:1,display:"flex",alignItems:"center"}}>×</button>
+              </div>
+            </div>
+            {/* Body */}
+            <div style={{padding:"24px"}}>
+              {[
+                {label:"Your ID",    value: userConnectionId,                                    icon:"👤"},
+                {label:"Host ID",    value: remoteConnectionId || remoteIdRef.current,           icon:"🖥️"},
+                {label:"Role",       value: "Viewer (Remote Control)",                           icon:"🖱️"},
+                {label:"Duration",   value: fmtSessionDur(sessionDuration),                      icon:"⏱️"},
+                {label:"Quality",    value: quality ? `${quality.rtt??'—'}ms RTT · ${quality.fps??'—'}fps · ${quality.kbps??'—'}kbps` : "Measuring…", icon:"📶"},
+                {label:"Control",    value: controlEnabled ? "Active — Esc to release" : "Inactive", icon:"🎮"},
+              ].map(({label,value,icon})=>(
+                <div key={label} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
+                  <span style={{fontSize:18,width:24,textAlign:"center",flexShrink:0}}>{icon}</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:11,color:"#6b7280",fontWeight:600,textTransform:"uppercase",letterSpacing:0.8}}>{label}</div>
+                    <div style={{fontSize:14,color: label==="Control"&&controlEnabled?"#4ade80":"#e5e7eb",fontWeight:500,fontFamily:label.includes("ID")?"monospace":"inherit",marginTop:2}}>{value||"—"}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {/* Footer */}
+            <div style={{padding:"16px 24px",borderTop:"1px solid rgba(255,255,255,0.06)",display:"flex",gap:10}}>
+              <button onClick={()=>dispatch(setShowSessionDialog(false))} style={{flex:1,padding:"10px",borderRadius:8,border:"1px solid rgba(255,255,255,0.15)",background:"rgba(255,255,255,0.05)",color:"#9ca3af",cursor:"pointer",fontSize:13,fontWeight:600}}>Close</button>
+              <button onClick={()=>{ dispatch(setShowSessionDialog(false)); handleDisconnect(); }} style={{flex:1,padding:"10px",borderRadius:8,border:"none",background:"#dc2626",color:"#fff",cursor:"pointer",fontSize:13,fontWeight:600}}>Disconnect</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
