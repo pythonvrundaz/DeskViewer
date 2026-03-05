@@ -718,7 +718,10 @@ const ConnectionScreen = ({
       {callRejected&&(
         <div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",zIndex:100,background:"#fee2e2",border:"1px solid #fca5a5",borderRadius:10,padding:"12px 24px",display:"flex",alignItems:"center",gap:10,boxShadow:"0 4px 20px rgba(0,0,0,0.15)"}}>
           <span style={{fontSize:20}}>❌</span>
-          <div><div style={{fontWeight:700,color:"#991b1b",fontSize:14}}>Connection Rejected</div><div style={{color:"#b91c1c",fontSize:12}}>The host declined your request.</div></div>
+          <div>
+            <div style={{fontWeight:700,color:"#991b1b",fontSize:14}}>Connection Rejected</div>
+            <div style={{color:"#b91c1c",fontSize:12}}>The host declined your request.</div>
+          </div>
         </div>
       )}
 
@@ -729,9 +732,14 @@ const ConnectionScreen = ({
             <div style={{background:"#0284c7",padding:"24px",color:"#fff"}}>
               <div style={{display:"flex",alignItems:"center",gap:16}}>
                 <div style={{width:56,height:56,borderRadius:"50%",background:"rgba(255,255,255,0.2)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-                  <svg style={{width:28,height:28}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                  <svg style={{width:28,height:28}} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                  </svg>
                 </div>
-                <div><div style={{fontSize:18,fontWeight:700}}>Incoming Request</div><div style={{fontSize:13,opacity:0.85}}>Someone wants to view your screen</div></div>
+                <div>
+                  <div style={{fontSize:18,fontWeight:700}}>Incoming Request</div>
+                  <div style={{fontSize:13,opacity:0.85}}>Someone wants to view your screen</div>
+                </div>
               </div>
             </div>
             <div style={{padding:"20px 24px"}}>

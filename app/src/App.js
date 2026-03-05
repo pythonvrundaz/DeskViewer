@@ -454,14 +454,12 @@ const App = () => {
   }, [callRejected]);
 
   const handleDisconnect = useCallback(() => {
-    // NOTE: When called from AppScreen's handleDisconnect, the socket
-    // "remotedisconnected" emit and "set-global-capture" false have already
-    // been sent. When called directly (e.g. remote side disconnects via
-    // sessionEnded), we still need to emit here. The isResettingRef guard
-    // in resetSession ensures only one full reset runs even if call.on("close")
-    // also fires resetSession after we call call.close() below.
     const rid = remoteIdRef.current;
     if (socketRef.current && rid) socketRef.current.emit("remotedisconnected", { remoteId: rid });
+    // Set isResettingRef BEFORE calling close() so when call.on("close") fires
+    // and calls resetSession(), the guard lets it through as the FIRST call,
+    // then blocks the manual resetSession() below as the duplicate.
+    // Either way only one reset runs — the input is always left clickable.
     const call = callRef.current;
     callRef.current = null;
     if (call) call.close();
