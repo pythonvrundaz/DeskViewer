@@ -1,204 +1,111 @@
-// server.js  — DeskViewer signalling + relay server
-// Everything runs on ONE port (default 5000):
-//   Socket.IO  → ws://host:5000          (signalling + relay)
-//   PeerJS     → http://host:5000/peerjs (WebRTC signalling)
-//   File upload→ http://host:5000/upload
-//
-// Run:    node server.js
-// Deps:   npm install express socket.io peer multer cors
+// server.js
+const express = require("express");
+const app = express();
+const server = require("http").createServer(app);
+const { ExpressPeerServer } = require("peer");
+const socketIo = require("socket.io");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 
-"use strict";
-
-const express      = require("express");
-const http         = require("http");
-const { Server }   = require("socket.io");
-const { ExpressPeerServer } = require("peer");   // embedded, same port
-const multer       = require("multer");
-const path         = require("path");
-const fs           = require("fs");
-const cors         = require("cors");
-
-// ── Config ────────────────────────────────────────────────────────────────────
-const PORT       = process.env.PORT || 5000;
-const UPLOAD_DIR = path.join(__dirname, "uploads");
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
-// ── Express ───────────────────────────────────────────────────────────────────
-const app    = express();
-const server = http.createServer(app);
-
-app.use(cors({ origin: "*" }));
+app.set("trust proxy", 1);
+app.use((req, res, next) => {
+  res.setHeader("ngrok-skip-browser-warning", "true");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, ngrok-skip-browser-warning");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
 app.use(express.json());
-app.use("/uploads", express.static(UPLOAD_DIR));
 
-// ── PeerJS — embedded on same http server under /peerjs ──────────────────────
-// This is critical: PeerJS MUST share the same port as Socket.IO so that
-// ngrok (or any single-port tunnel) exposes both on one URL.
-// Client config must be:
-//   host: "your-ngrok-domain.ngrok-free.app"  (no port)
-//   port: 443
-//   path: "/peerjs"
-//   secure: true
-const peerServer = ExpressPeerServer(server, {
-  path:            "/peerjs",
-  allow_discovery: false,
-  proxied:         true,
+// ── File upload storage ───────────────────────────────────────────────────────
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_, __, cb) => cb(null, uploadDir),
+  filename: (_, file, cb) => cb(null, Date.now() + "_" + Buffer.from(file.originalname, "latin1").toString("utf8")),
 });
-app.use("/peerjs", peerServer);
+const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } });
 
-peerServer.on("connection",    c => console.log(`[peer] +  ${c.getId()}`));
-peerServer.on("disconnect",    c => console.log(`[peer] -  ${c.getId()}`));
+app.use("/uploads", express.static(uploadDir));
 
-// ── File upload ───────────────────────────────────────────────────────────────
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (_, __, cb) => cb(null, UPLOAD_DIR),
-    filename:    (_, f,  cb) => cb(null, `${Date.now()}-${f.originalname}`),
-  }),
-  limits: { fileSize: 20 * 1024 * 1024 },
-});
 app.post("/upload", upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file" });
-  res.json({ url: `/uploads/${req.file.filename}`, name: req.file.originalname, size: req.file.size, type: req.file.mimetype });
+  res.json({
+    url: "/uploads/" + req.file.filename,
+    name: req.file.originalname,
+    size: req.file.size,
+    type: req.file.mimetype,
+  });
 });
+
+// ── PeerJS ────────────────────────────────────────────────────────────────────
+const peerServer = ExpressPeerServer(server, { debug: true, proxied: true });
+app.use("/peerjs", peerServer);
+peerServer.on("connection", (c) => console.log("PeerJS connected:", c.getId()));
+peerServer.on("disconnect", (c) => console.log("PeerJS disconnected:", c.getId()));
 
 // ── Socket.IO ─────────────────────────────────────────────────────────────────
-const io = new Server(server, {
+const io = socketIo(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
-  maxHttpBufferSize: 20 * 1024 * 1024,
-  // Aggressive ping to detect dead connections fast
-  pingTimeout:  10000,
-  pingInterval: 5000,
+  transports: ["websocket", "polling"],
+  allowEIO3: true,
 });
 
-// uid → Set of socket.ids (one user may have multiple tabs — we handle all)
-const uidToSockets = new Map();
+io.on("connection", (socket) => {
+  console.log("Socket connected:", socket.id);
 
-const addSocket = (uid, socketId) => {
-  if (!uidToSockets.has(uid)) uidToSockets.set(uid, new Set());
-  uidToSockets.get(uid).add(socketId);
-};
-const removeSocket = (uid, socketId) => {
-  uidToSockets.get(uid)?.delete(socketId);
-  if (uidToSockets.get(uid)?.size === 0) uidToSockets.delete(uid);
-};
+  socket.on("join", (room) => { socket.join(room); console.log("Joined:", room); });
 
-// Relay an event to every socket belonging to a uid
-const relay = (event, targetUid, payload, senderSocketId) => {
-  const room = `User${targetUid}`;
-  const roomSockets = io.sockets.adapter.rooms.get(room);
-  if (!roomSockets || roomSockets.size === 0) {
-    console.warn(`[relay] "${event}" → uid=${targetUid} — NO listeners (offline?)`);
-    return false;
-  }
-  // Don't echo back to sender
-  io.to(room).except(senderSocketId).emit(event, payload);
-  console.log(`[relay] "${event}" → uid=${targetUid} (${roomSockets.size} socket(s))`);
-  return true;
-};
+  // ── Session control ────────────────────────────────────────────────────────
+  socket.on("remotedisconnected", ({ remoteId }) => io.to("User" + remoteId).emit("remotedisconnected"));
+  socket.on("callrejected",       ({ remoteId }) => io.to("User" + remoteId).emit("callrejected"));
 
-io.on("connection", socket => {
-  let myUid = null;
+  // ── Remote control ─────────────────────────────────────────────────────────
+  socket.on("mousemove",       ({ remoteId, event }) => io.to("User" + remoteId).emit("mousemove",       event));
+  socket.on("mousedown",       ({ remoteId, event }) => io.to("User" + remoteId).emit("mousedown",       event));
+  socket.on("mouseup",         ({ remoteId, event }) => io.to("User" + remoteId).emit("mouseup",         event));
+  socket.on("dblclick",        ({ remoteId, event }) => io.to("User" + remoteId).emit("dblclick",        event));
+  socket.on("scroll",          ({ remoteId, event }) => io.to("User" + remoteId).emit("scroll",          event));
+  socket.on("keydown",         ({ remoteId, event }) => io.to("User" + remoteId).emit("keydown",         event));
+  socket.on("keyup",           ({ remoteId, event }) => io.to("User" + remoteId).emit("keyup",           event));
+  socket.on("stream-resolution",({ remoteId, event }) => io.to("User" + remoteId).emit("stream-resolution", event));
+  socket.on("requestcontrol",  ({ userId, remoteId }) => io.to("User" + remoteId).emit("controlrequested", { from: userId }));
+  socket.on("releasecontrol",  ({ userId, remoteId }) => io.to("User" + remoteId).emit("controlreleased",  { from: userId }));
 
-  // ── JOIN ─────────────────────────────────────────────────────────────────
-  socket.on("join", roomName => {
-    socket.join(roomName);
-    myUid = roomName.replace(/^User/, "");
-    addSocket(myUid, socket.id);
-    console.log(`[socket] join  uid=${myUid}  socketId=${socket.id}`);
+  // ── Chat ───────────────────────────────────────────────────────────────────
+  socket.on("chat-message", ({ remoteId, msg }) => {
+    io.to("User" + remoteId).emit("chat-message", msg);
   });
 
-  // ── REMOTE DISCONNECTED ───────────────────────────────────────────────────
-  // This is the critical event. Fired by either side when:
-  //   • Disconnect button clicked
-  //   • EXE ✕ close button (via electron.js "app-will-close" → onWillClose)
-  //   • Viewer cancels while waiting
-  socket.on("remotedisconnected", ({ remoteId } = {}) => {
-    if (!remoteId) {
-      console.warn(`[socket] remotedisconnected — missing remoteId (uid=${myUid})`);
-      return;
-    }
-    console.log(`[socket] remotedisconnected  from=${myUid} → to=${remoteId}`);
-    relay("remotedisconnected", remoteId, {}, socket.id);
+  // ── Clipboard sync ─────────────────────────────────────────────────────────
+  // One side copies text → emits "clipboard-sync" → server relays to other side.
+  // Uses the same room pattern as all other events: "User" + remoteId.
+  socket.on("clipboard-sync", ({ remoteId, text }) => {
+    if (!remoteId || !text) return;
+    io.to("User" + remoteId).emit("clipboard-sync", { text });
   });
 
-  // ── CALL REJECTED ─────────────────────────────────────────────────────────
-  socket.on("callrejected", ({ remoteId } = {}) => {
+  // ── Annotation canvas ──────────────────────────────────────────────────────
+  // Viewer draws on canvas → emits PNG dataUrl → server relays to host.
+  // dataUrl can be large (~50-200KB per frame) — only sent on pointer-up,
+  // not continuously, so bandwidth is acceptable.
+  socket.on("annotation-frame", ({ remoteId, userId, dataUrl }) => {
+    if (!remoteId || !dataUrl) return;
+    io.to("User" + remoteId).emit("annotation-frame", { userId, dataUrl });
+  });
+
+  socket.on("annotation-clear", ({ remoteId, userId }) => {
     if (!remoteId) return;
-    console.log(`[socket] callrejected  from=${myUid} → to=${remoteId}`);
-    relay("callrejected", remoteId, {}, socket.id);
+    io.to("User" + remoteId).emit("annotation-clear", { userId });
   });
 
-  // ── CONTROL EVENTS (viewer → host) ────────────────────────────────────────
-  ["mousemove","mousedown","mouseup","dblclick","scroll","keydown","keyup","stream-resolution"].forEach(ev => {
-    socket.on(ev, data => {
-      if (!data?.remoteId) return;
-      relay(ev, data.remoteId, data, socket.id);
-    });
-  });
-
-  // ── CHAT ──────────────────────────────────────────────────────────────────
-  socket.on("chat-message", ({ remoteId, msg } = {}) => {
-    if (!remoteId || !msg) return;
-    relay("chat-message", remoteId, msg, socket.id);
-  });
-
-  // ── ANNOTATIONS ───────────────────────────────────────────────────────────
-  socket.on("annotation-frame", ({ remoteId, ...rest } = {}) => {
-    if (!remoteId) return;
-    relay("annotation-frame", remoteId, { remoteId, ...rest }, socket.id);
-  });
-
-  // ── CLIPBOARD ─────────────────────────────────────────────────────────────
-  socket.on("clipboard-sync", ({ remoteId, text } = {}) => {
-    if (!remoteId) return;
-    relay("clipboard-sync", remoteId, { text }, socket.id);
-  });
-
-  // ── SOCKET DISCONNECT (network drop / app crash / tab close) ──────────────
-  // When a socket disconnects unexpectedly (without sending "remotedisconnected"),
-  // we broadcast remotedisconnected to the remote peer IF we know their uid.
-  // We look it up from a session pair registry that we maintain here.
-  socket.on("disconnect", reason => {
-    console.log(`[socket] disconnect  uid=${myUid}  reason=${reason}`);
-    if (myUid) {
-      removeSocket(myUid, socket.id);
-      // If this peer had an active session partner, notify them
-      const partnerId = sessionPairs.get(myUid);
-      if (partnerId) {
-        console.log(`[socket] notifying partner ${partnerId} of unexpected disconnect`);
-        relay("remotedisconnected", partnerId, {}, socket.id);
-        sessionPairs.delete(myUid);
-        sessionPairs.delete(partnerId);
-      }
-    }
-  });
-
-  // ── SESSION PAIR TRACKING ─────────────────────────────────────────────────
-  // Track who is in session with whom so we can notify on unexpected disconnect.
-  // Client emits "session-pair" when a call is established.
-  socket.on("session-pair", ({ myId, remoteId } = {}) => {
-    if (!myId || !remoteId) return;
-    sessionPairs.set(myId, remoteId);
-    sessionPairs.set(remoteId, myId);
-    console.log(`[socket] session pair: ${myId} ↔ ${remoteId}`);
-  });
-
-  socket.on("session-unpair", ({ myId } = {}) => {
-    if (!myId) return;
-    const partnerId = sessionPairs.get(myId);
-    if (partnerId) sessionPairs.delete(partnerId);
-    sessionPairs.delete(myId);
-  });
+  socket.on("disconnect", () => console.log("Socket disconnected:", socket.id));
 });
 
-// uid → partner uid (for unexpected disconnect notification)
-const sessionPairs = new Map();
-
-// ── Start ─────────────────────────────────────────────────────────────────────
-server.listen(PORT, () => {
-  console.log(`\n✅ DeskViewer server running on port ${PORT}`);
-  console.log(`   Socket.IO : http://localhost:${PORT}`);
-  console.log(`   PeerJS    : http://localhost:${PORT}/peerjs`);
-  console.log(`   Uploads   : ${UPLOAD_DIR}\n`);
+server.listen(5000, "0.0.0.0", () => {
+  console.log("✅ Server on port 5000");
+  console.log("   Run: ngrok http 5000");
 });

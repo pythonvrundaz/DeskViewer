@@ -29,33 +29,33 @@ const makeDummyVideoTrack = () => {
   canvas.width = 2; canvas.height = 2;
   const ctx = canvas.getContext("2d");
   let tick = 0;
-  const draw = () => { ctx.fillStyle = tick++ % 2 === 0 ? "#000001" : "#000000"; ctx.fillRect(0, 0, 2, 2); };
+  const draw = () => { ctx.fillStyle = tick++ % 2 === 0 ? "#000001" : "#000000"; ctx.fillRect(0,0,2,2); };
   draw();
   const stream = canvas.captureStream(30);
-  const track = stream.getVideoTracks()[0];
-  const iv = setInterval(draw, 33);
-  track._stop = () => clearInterval(iv);
+  const track  = stream.getVideoTracks()[0];
+  const iv     = setInterval(draw, 33);
+  track._stop  = () => clearInterval(iv);
   return track;
 };
 
 const unlockAudio = (audioEl) => {
   if (!audioEl) return;
   try {
-    const ac = new AudioContext(), buf = ac.createBuffer(1, 1, ac.sampleRate), src = ac.createBufferSource();
+    const ac = new AudioContext(), buf = ac.createBuffer(1,1,ac.sampleRate), src = ac.createBufferSource();
     src.buffer = buf;
     const dest = ac.createMediaStreamDestination();
     src.connect(dest); src.start();
     const us = dest.stream;
     audioEl.srcObject = us; audioEl.volume = 0; audioEl.muted = false;
-    audioEl.play().then(() => { src.stop(); ac.close(); if (audioEl.srcObject === us) { audioEl.srcObject = null; audioEl.volume = 1.0; } }).catch(() => { });
-  } catch { }
+    audioEl.play().then(() => { src.stop(); ac.close(); if (audioEl.srcObject===us) { audioEl.srcObject=null; audioEl.volume=1.0; } }).catch(()=>{});
+  } catch {}
 };
 
 const buildHostAudioMix = (desktopAudioTrack, micTrack) => {
   const audioCtx = new AudioContext(), destination = audioCtx.createMediaStreamDestination();
-  if (desktopAudioTrack) { const ds = new MediaStream([desktopAudioTrack]); audioCtx.createMediaStreamSource(ds).connect(destination); }
+  if (desktopAudioTrack) { const ds=new MediaStream([desktopAudioTrack]); audioCtx.createMediaStreamSource(ds).connect(destination); }
   const micGain = audioCtx.createGain(); micGain.gain.value = 0;
-  if (micTrack) { const ms = new MediaStream([micTrack]); audioCtx.createMediaStreamSource(ms).connect(micGain); }
+  if (micTrack) { const ms=new MediaStream([micTrack]); audioCtx.createMediaStreamSource(ms).connect(micGain); }
   micGain.connect(destination);
   return { audioCtx, mixedTrack: destination.stream.getAudioTracks()[0], micGain };
 };
@@ -63,97 +63,93 @@ const buildHostAudioMix = (desktopAudioTrack, micTrack) => {
 const wireHostAudio = (call, audioRef) => {
   let done = false;
   const play = (track) => {
-    if (track.kind !== "audio" || done) return; done = true;
-    const el = audioRef.current; if (!el) return;
-    el.srcObject = new MediaStream([track]); el.volume = 1.0; el.muted = false;
-    el.play().catch(() => { });
+    if (track.kind!=="audio"||done) return; done=true;
+    const el=audioRef.current; if (!el) return;
+    el.srcObject=new MediaStream([track]); el.volume=1.0; el.muted=false;
+    el.play().catch(()=>{});
   };
-  let polls = 0;
+  let polls=0;
   const attach = () => {
-    const pc = call.peerConnection; if (!pc) { if (polls++ < 200) setTimeout(attach, 25); return; }
-    pc.addEventListener("track", ev => play(ev.track));
-    pc.getReceivers().forEach(r => { if (r.track) play(r.track); });
+    const pc=call.peerConnection; if (!pc) { if (polls++<200) setTimeout(attach,25); return; }
+    pc.addEventListener("track", ev=>play(ev.track));
+    pc.getReceivers().forEach(r=>{ if(r.track) play(r.track); });
   };
   attach();
-  call.on("stream", s => s.getAudioTracks().forEach(play));
+  call.on("stream", s=>s.getAudioTracks().forEach(play));
 };
 
 // Safe call cleanup — removes listeners then closes
 const closeCall = (call) => {
   if (!call) return;
-  try { call.removeAllListeners?.(); } catch { }
-  try { call.close(); } catch { }
+  try { call.removeAllListeners?.(); } catch {}
+  try { call.close(); } catch {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 const App = () => {
   const dispatch = useDispatch();
 
-  const peerInstance = useRef(null);
-  const socketRef = useRef(null);
-  const callRef = useRef(null);
-  const remoteStreamRef = useRef(null);
-  const remoteIdRef = useRef("");
-  const userIdRef = useRef("");
+  const peerInstance      = useRef(null);
+  const socketRef         = useRef(null);
+  const callRef           = useRef(null);
+  const remoteStreamRef   = useRef(null);
+  const remoteIdRef       = useRef("");
+  const userIdRef         = useRef("");
   const localMicStreamRef = useRef(null);
-  const localMicTrackRef = useRef(null);
-  const dummyTrackRef = useRef(null);
-  const hostAudioCtxRef = useRef(null);
-  const hostMicGainRef = useRef(null);
-  const localStreamRef = useRef(null);
-  const hostAudioRef = useRef(null);
-  const viewerAudioRef = useRef(null);
-  const isResettingRef = useRef(false);  // prevents double resetSession
-  const isConnectingRef = useRef(false);  // true while viewer is waiting for host
+  const localMicTrackRef  = useRef(null);
+  const dummyTrackRef     = useRef(null);
+  const hostAudioCtxRef   = useRef(null);
+  const hostMicGainRef    = useRef(null);
+  const localStreamRef    = useRef(null);
+  const hostAudioRef      = useRef(null);
+  const viewerAudioRef    = useRef(null);
+  const isResettingRef    = useRef(false);  // prevents double resetSession
+  const isConnectingRef   = useRef(false);  // true while viewer is waiting for host
 
-  const [myId, setMyId] = useState("");
-  const [currentScreen, setCurrentScreen] = useState("home");
-  const [remoteStream, setRemoteStream] = useState(null);
-  const [sessionEnded, setSessionEnded] = useState(false);
-  const [callRejected, setCallRejected] = useState(false);
-  const [incomingCall, setIncomingCall] = useState(null);
-  const [incomingCallerId, setIncomingCallerId] = useState("");
-  const [sources, setSources] = useState([]);
-  const [showPicker, setShowPicker] = useState(false);
-  const [pendingCall, setPendingCall] = useState(null);
-  const [sessionReset, setSessionReset] = useState(null);
+  const [myId,             setMyId]            = useState("");
+  const [currentScreen,    setCurrentScreen]   = useState("home");
+  const [remoteStream,     setRemoteStream]    = useState(null);
+  const [sessionEnded,     setSessionEnded]    = useState(false);
+  const [callRejected,     setCallRejected]    = useState(false);
+  const [incomingCall,     setIncomingCall]    = useState(null);
+  const [incomingCallerId, setIncomingCallerId]= useState("");
+  const [sources,          setSources]         = useState([]);
+  const [showPicker,       setShowPicker]      = useState(false);
+  const [pendingCall,      setPendingCall]     = useState(null);
+  const [sessionReset,     setSessionReset]    = useState(null);
 
   // connectError: { type: "unavailable"|"rejected"|"timeout"|"error"|"disconnected", message: string }
   const [connectError, setConnectError] = useState(null);
 
   const stopMic = useCallback(() => {
     if (localMicStreamRef.current) {
-      localMicStreamRef.current.getTracks().forEach(t => { t.enabled = false; t.stop(); });
+      localMicStreamRef.current.getTracks().forEach(t => { t.enabled=false; t.stop(); });
       localMicStreamRef.current = null;
     }
     localMicTrackRef.current = null;
-    if (dummyTrackRef.current) { dummyTrackRef.current._stop?.(); dummyTrackRef.current.stop(); dummyTrackRef.current = null; }
-    if (hostAudioCtxRef.current) { hostAudioCtxRef.current.close().catch(() => { }); hostAudioCtxRef.current = null; hostMicGainRef.current = null; }
+    if (dummyTrackRef.current) { dummyTrackRef.current._stop?.(); dummyTrackRef.current.stop(); dummyTrackRef.current=null; }
+    if (hostAudioCtxRef.current) { hostAudioCtxRef.current.close().catch(()=>{}); hostAudioCtxRef.current=null; hostMicGainRef.current=null; }
   }, []);
 
   const stopAllAudio = useCallback(() => {
-    [hostAudioRef, viewerAudioRef].forEach(r => { if (r.current) { r.current.srcObject = null; r.current.pause(); } });
+    [hostAudioRef, viewerAudioRef].forEach(r => { if (r.current) { r.current.srcObject=null; r.current.pause(); } });
   }, []);
 
   // ── resetSession ── single exit point back to home screen ─────────────────
   // errorInfo: null | { type, message } — shown as banner in ConnectionScreen
   const resetSession = useCallback((errorInfo = null) => {
     if (isResettingRef.current) { console.log("🔄 resetSession: duplicate skipped"); return; }
-    isResettingRef.current = true;
+    isResettingRef.current  = true;
     isConnectingRef.current = false;
 
     ipcRenderer.send("set-global-capture", false);
     ipcRenderer.send("session-ended");
-    // Tell server to remove session pair so unexpected-disconnect doesn't double-notify
-    if (socketRef.current?.connected && userIdRef.current) {
-      socketRef.current.emit("session-unpair", { myId: userIdRef.current });
-    }
 
     setCurrentScreen("home");
     setRemoteStream(null);
     remoteStreamRef.current = null;
-    localStreamRef.current = null;
-    remoteIdRef.current = "";
+    localStreamRef.current  = null;
+    remoteIdRef.current     = "";
     dispatch(setShowSessionDialog(false));
     dispatch(setSessionMode(-1));
     stopMic();
@@ -196,9 +192,9 @@ const App = () => {
     });
     socketRef.current = socket;
 
-    socket.on("connect", () => { console.log("🟢 Socket:", socket.id); socket.emit("join", "User" + uid); });
-    socket.on("disconnect", r => console.warn("🔴 Socket:", r));
-    socket.on("connect_error", e => console.error("🔴 Socket:", e.message));
+    socket.on("connect",       () => { console.log("🟢 Socket:", socket.id); socket.emit("join", "User"+uid); });
+    socket.on("disconnect",    r  => console.warn("🔴 Socket:", r));
+    socket.on("connect_error", e  => console.error("🔴 Socket:", e.message));
 
     // CORNER CASE: remote side disconnected.
     // This fires in THREE scenarios that all need different handling:
@@ -231,141 +227,77 @@ const App = () => {
       setSessionReset(prev => (prev === null ? 1 : prev + 1));
     });
 
-    socket.on("mousemove", e => ipcRenderer.send("mousemove", e));
-    socket.on("mousedown", e => ipcRenderer.send("mousedown", e));
-    socket.on("mouseup", e => ipcRenderer.send("mouseup", e));
-    socket.on("dblclick", e => ipcRenderer.send("dblclick", e));
-    socket.on("scroll", e => ipcRenderer.send("scroll", e));
-    socket.on("keydown", e => ipcRenderer.send("keydown", e));
-    socket.on("keyup", e => ipcRenderer.send("keyup", e));
+    socket.on("mousemove",         e => ipcRenderer.send("mousemove",         e));
+    socket.on("mousedown",         e => ipcRenderer.send("mousedown",         e));
+    socket.on("mouseup",           e => ipcRenderer.send("mouseup",           e));
+    socket.on("dblclick",          e => ipcRenderer.send("dblclick",          e));
+    socket.on("scroll",            e => ipcRenderer.send("scroll",            e));
+    socket.on("keydown",           e => ipcRenderer.send("keydown",           e));
+    socket.on("keyup",             e => ipcRenderer.send("keyup",             e));
     socket.on("stream-resolution", e => ipcRenderer.send("stream-resolution", e));
 
-    // ── Peer factory — call this to (re)create the PeerJS instance ───────────
-    // We extract this into a named function so we can call it again after
-    // a "network" error, which leaves the peer in an unrecoverable state
-    // that requires a full destroy + recreate (peer.reconnect() is not enough).
-    let peerReconnectTimer = null;
-    let peerReconnectCount = 0;
+    const peer = new Peer(uid, {
+      host: CONFIG.PEER_HOST, port: CONFIG.PEER_PORT,
+      path: CONFIG.PEER_PATH, secure: CONFIG.PEER_SECURE, debug: 2,
+      config: { iceServers: [
+        { urls: "stun:stun.l.google.com:19302"  },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+      ]},
+    });
 
-    const createPeer = () => {
-      // Destroy any existing peer cleanly before creating a new one
-      if (peerInstance.current && !peerInstance.current.destroyed) {
-        try { peerInstance.current.destroy(); } catch { }
+    peer.on("open",         id  => console.log("✅ PeerJS:", id));
+    peer.on("disconnected", ()  => { if (!peer.destroyed) peer.reconnect(); });
+
+    peer.on("error", err => {
+      console.error("❌ Peer:", err.type, err.message);
+
+      // CORNER CASE A: viewer tries to connect to an ID that is offline / doesn't exist
+      if (err.type === "peer-unavailable") {
+        isConnectingRef.current = false;
+        const call = callRef.current; callRef.current = null;
+        closeCall(call);
+        stopMic();
+        remoteIdRef.current = "";
+        setCurrentScreen("home");
+        setConnectError({ type: "unavailable", message: "That ID is not online. Make sure the other person has DeskViewer open." });
+        setSessionReset(prev => (prev === null ? 1 : prev + 1));
+        return;
       }
-      clearTimeout(peerReconnectTimer);
 
-      const peer = new Peer(uid, {
-        host: CONFIG.PEER_HOST, port: CONFIG.PEER_PORT,
-        path: CONFIG.PEER_PATH, secure: CONFIG.PEER_SECURE, debug: 2,
-        config: {
-          iceServers: [
-            { urls: "stun:stun.l.google.com:19302" },
-            { urls: "stun:stun1.l.google.com:19302" },
-            { urls: "stun:stun2.l.google.com:19302" },
-          ]
-        },
+      // CORNER CASE B: our own peer ID is taken — reload to get a fresh ID
+      if (err.type === "unavailable-id") { window.location.reload(); return; }
+
+      // CORNER CASE C: ICE/network failure during or before session
+      if (isConnectingRef.current || callRef.current) {
+        resetSession({ type: "error", message: "Connection failed due to a network error. Please try again." });
+      }
+    });
+
+    // CORNER CASE D: host is already in a session when another viewer calls — auto-reject
+    // CORNER CASE NEW: viewer cancels while host is looking at the modal.
+    // We attach a call.on("close") listener so if the viewer cancels (closing
+    // the PeerJS connection) the modal automatically disappears on the host side.
+    peer.on("call", call => {
+      if (callRef.current) {
+        console.warn("📵 Busy — auto-rejecting call from", call.peer);
+        closeCall(call);
+        socket.emit("callrejected", { remoteId: call.peer });
+        return;
+      }
+
+      // Listen for viewer-side cancel: if the call closes before host accepts,
+      // dismiss the modal so host isn't left with a zombie dialog
+      call.on("close", () => {
+        setIncomingCall(prev => (prev === call ? null : prev));
+        setIncomingCallerId(prev => (prev === call.peer ? "" : prev));
       });
 
-      peer.on("open", id => {
-        console.log("✅ PeerJS connected:", id);
-        peerReconnectCount = 0; // reset backoff on successful connection
-        // Clear any "server unreachable" error that was showing
-        setConnectError(prev => prev?.type === "server" ? null : prev);
-      });
+      setIncomingCall(call);
+      setIncomingCallerId(call.peer);
+    });
 
-      // "disconnected" = PeerJS lost its WebSocket to the server but peer not destroyed.
-      // Safe to call reconnect() here — this handles normal transient drops.
-      peer.on("disconnected", () => {
-        console.warn("⚡ PeerJS disconnected from server — attempting reconnect...");
-        if (!peer.destroyed) {
-          try { peer.reconnect(); } catch (e) {
-            console.warn("peer.reconnect() failed:", e.message);
-          }
-        }
-      });
-
-      peer.on("error", err => {
-        console.error("❌ Peer:", err.type, err.message);
-
-        // ── peer-unavailable: target ID is offline ──────────────────────────
-        if (err.type === "peer-unavailable") {
-          isConnectingRef.current = false;
-          const call = callRef.current; callRef.current = null;
-          closeCall(call);
-          stopMic();
-          remoteIdRef.current = "";
-          setCurrentScreen("home");
-          setConnectError({ type: "unavailable", message: "That ID is not online. Make sure the other person has DeskViewer open." });
-          setSessionReset(prev => (prev === null ? 1 : prev + 1));
-          return;
-        }
-
-        // ── unavailable-id: our ID is already taken ─────────────────────────
-        if (err.type === "unavailable-id") {
-          window.location.reload();
-          return;
-        }
-
-        // ── network / server-error: lost connection to PeerJS server ────────
-        // peer.reconnect() does NOT work after a "network" error — the peer
-        // is left in an error state. We must destroy and recreate the peer.
-        // Use exponential backoff: 2s, 4s, 8s, max 30s.
-        if (err.type === "network" || err.type === "server-error" || err.type === "socket-error" || err.type === "socket-closed") {
-          console.warn(`🔄 PeerJS ${err.type} — will recreate peer with backoff`);
-
-          // If we were in a session or connecting, clean up first
-          if (isConnectingRef.current || callRef.current) {
-            resetSession({ type: "server", message: "Lost connection to server. Reconnecting…" });
-          } else {
-            // Just on home screen — show non-blocking reconnecting notice
-            setConnectError({ type: "server", message: "Lost connection to server. Reconnecting…" });
-          }
-
-          // Exponential backoff: 2^n * 1000ms, capped at 30s
-          peerReconnectCount = Math.min(peerReconnectCount + 1, 5);
-          const delay = Math.min(Math.pow(2, peerReconnectCount) * 1000, 30000);
-          console.log(`🔄 Recreating peer in ${delay}ms (attempt ${peerReconnectCount})`);
-
-          peerReconnectTimer = setTimeout(() => {
-            if (!peer.destroyed) {
-              try { peer.destroy(); } catch { }
-            }
-            createPeer();
-          }, delay);
-          return;
-        }
-
-        // ── webrtc / ICE failure during active session ───────────────────────
-        if (isConnectingRef.current || callRef.current) {
-          resetSession({ type: "error", message: "Connection failed due to a network error. Please try again." });
-        }
-      });
-
-      // CORNER CASE: host already in session — auto-reject new caller
-      // CORNER CASE: viewer cancels while host sees modal — dismiss via close listener
-      peer.on("call", call => {
-        if (callRef.current) {
-          console.warn("📵 Busy — auto-rejecting call from", call.peer);
-          closeCall(call);
-          socket.emit("callrejected", { remoteId: call.peer });
-          return;
-        }
-
-        // If viewer cancels before host accepts, auto-dismiss the modal
-        call.on("close", () => {
-          setIncomingCall(prev => (prev === call ? null : prev));
-          setIncomingCallerId(prev => (prev === call.peer ? "" : prev));
-        });
-
-        setIncomingCall(call);
-        setIncomingCallerId(call.peer);
-      });
-
-      peerInstance.current = peer;
-      return peer;
-    };
-
-    createPeer();
+    peerInstance.current = peer;
 
     // CORNER CASE E: app closed while session active or connecting.
     // CRITICAL: We must wait for the server to relay "remotedisconnected" to
@@ -398,15 +330,7 @@ const App = () => {
 
     return () => {
       ipcRenderer.removeListener("app-will-close", onWillClose);
-
-      socket.disconnect();
-
-      if (peerInstance.current && !peerInstance.current.destroyed) {
-        peerInstance.current.destroy();
-      }
-
-      stopMic();
-      stopAllAudio();
+      socket.disconnect(); peer.destroy(); stopMic(); stopAllAudio();
     };
   }, []);
 
@@ -441,7 +365,7 @@ const App = () => {
 
     const tryCapture = (withAudio) => navigator.mediaDevices.getUserMedia({
       audio: withAudio ? { mandatory: { chromeMediaSource: "desktop" } } : false,
-      video: { mandatory: { chromeMediaSource: "desktop", chromeMediaSourceId: sourceId, minWidth: 1280, maxWidth: 1920, minHeight: 720, maxHeight: 1080 } },
+      video: { mandatory: { chromeMediaSource:"desktop", chromeMediaSourceId:sourceId, minWidth:1280, maxWidth:1920, minHeight:720, maxHeight:1080 }},
     });
 
     try {
@@ -449,10 +373,10 @@ const App = () => {
       try { screenStream = await tryCapture(true); } catch { screenStream = await tryCapture(false); }
 
       const desktopAudioTrack = screenStream.getAudioTracks()[0] ?? null;
-      const screenVideoTrack = screenStream.getVideoTracks()[0];
+      const screenVideoTrack  = screenStream.getVideoTracks()[0];
 
       const micStream = await getMicStream();
-      const micTrack = micStream.getAudioTracks()[0] ?? null;
+      const micTrack  = micStream.getAudioTracks()[0] ?? null;
       localMicStreamRef.current = micStream; localMicTrackRef.current = micTrack;
 
       const { audioCtx, mixedTrack, micGain } = buildHostAudioMix(desktopAudioTrack, micTrack);
@@ -466,7 +390,7 @@ const App = () => {
       wireHostAudio(call, hostAudioRef);
       call.answer(combined);
 
-      callRef.current = call;
+      callRef.current     = call;
       remoteIdRef.current = call.peer;
       dispatch(setRemoteConnectionId(call.peer));
       dispatch(setSessionMode(0));
@@ -474,8 +398,6 @@ const App = () => {
       dispatch(setShowSessionDialog(false));
       ipcRenderer.send("session-started");
       setTimeout(() => ipcRenderer.invoke("RESTORE_WIN"), 1000);
-      // Tell server to track session pair for unexpected-disconnect notification
-      socketRef.current?.emit("session-pair", { myId: userIdRef.current, remoteId: call.peer });
 
       call.on("close", () => resetSession());
       call.on("error", e => {
@@ -520,7 +442,7 @@ const App = () => {
     remoteIdRef.current = remoteId;
 
     const micStream = await getMicStream();
-    const micTrack = micStream.getAudioTracks()[0];
+    const micTrack  = micStream.getAudioTracks()[0];
     localMicStreamRef.current = micStream; localMicTrackRef.current = micTrack;
 
     const dummyVideo = makeDummyVideoTrack();
@@ -551,8 +473,6 @@ const App = () => {
       setRemoteStream(stream);
       dispatch(setSessionMode(1));
       dispatch(setSessionStartTime(new Date()));
-      // Tell server to track session pair for unexpected-disconnect notification
-      socketRef.current?.emit("session-pair", { myId: userIdRef.current, remoteId: String(remoteId) });
     });
 
     // CORNER CASE: network failure mid-call
@@ -604,8 +524,8 @@ const App = () => {
 
   const audioElements = (
     <>
-      <audio ref={hostAudioRef} style={{ display: "none" }} />
-      <audio ref={viewerAudioRef} style={{ display: "none" }} />
+      <audio ref={hostAudioRef}   style={{ display:"none" }} />
+      <audio ref={viewerAudioRef} style={{ display:"none" }} />
     </>
   );
 
