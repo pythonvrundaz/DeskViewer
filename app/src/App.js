@@ -17,10 +17,8 @@ const { ipcRenderer } = window.require("electron");
 const getMicStream = async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    console.log("🎤 Mic acquired:", stream.getAudioTracks().map(t => t.label));
     return stream;
   } catch (e) {
-    console.warn("🎤 Mic unavailable:", e.message);
     const dest = new AudioContext().createMediaStreamDestination();
     return dest.stream;
   }
@@ -31,10 +29,7 @@ const makeDummyVideoTrack = () => {
   canvas.width = 2; canvas.height = 2;
   const ctx = canvas.getContext("2d");
   let tick = 0;
-  const draw = () => {
-    ctx.fillStyle = tick++ % 2 === 0 ? "#000001" : "#000000";
-    ctx.fillRect(0, 0, 2, 2);
-  };
+  const draw = () => { ctx.fillStyle = tick++ % 2 === 0 ? "#000001" : "#000000"; ctx.fillRect(0,0,2,2); };
   draw();
   const stream = canvas.captureStream(30);
   const track  = stream.getVideoTracks()[0];
@@ -44,104 +39,50 @@ const makeDummyVideoTrack = () => {
 };
 
 const unlockAudio = (audioEl) => {
-  if (!audioEl) { console.warn("🔊 unlockAudio: no element"); return; }
+  if (!audioEl) return;
   try {
-    const ac   = new AudioContext();
-    const buf  = ac.createBuffer(1, 1, ac.sampleRate);
-    const src  = ac.createBufferSource();
+    const ac = new AudioContext(), buf = ac.createBuffer(1,1,ac.sampleRate), src = ac.createBufferSource();
     src.buffer = buf;
-    const dest       = ac.createMediaStreamDestination();
-    src.connect(dest);
-    src.start();
-    const unlockStream = dest.stream;
-    audioEl.srcObject  = unlockStream;
-    audioEl.volume     = 0;
-    audioEl.muted      = false;
-    audioEl.play()
-      .then(() => {
-        console.log("🔊 Audio pre-unlocked ✅");
-        src.stop();
-        ac.close();
-        if (audioEl.srcObject === unlockStream) {
-          audioEl.srcObject = null;
-          audioEl.volume    = 1.0;
-        }
-      })
-      .catch(e => console.warn("🔊 unlockAudio failed:", e.message));
-  } catch (e) {
-    console.warn("🔊 unlockAudio error:", e.message);
-  }
+    const dest = ac.createMediaStreamDestination();
+    src.connect(dest); src.start();
+    const us = dest.stream;
+    audioEl.srcObject = us; audioEl.volume = 0; audioEl.muted = false;
+    audioEl.play().then(() => { src.stop(); ac.close(); if (audioEl.srcObject===us) { audioEl.srcObject=null; audioEl.volume=1.0; } }).catch(()=>{});
+  } catch {}
 };
 
 const buildHostAudioMix = (desktopAudioTrack, micTrack) => {
-  const audioCtx   = new AudioContext();
-  const destination = audioCtx.createMediaStreamDestination();
-
-  if (desktopAudioTrack) {
-    const desktopStream  = new MediaStream([desktopAudioTrack]);
-    const desktopSource  = audioCtx.createMediaStreamSource(desktopStream);
-    desktopSource.connect(destination);
-    console.log("🔊 Desktop audio connected to mixer ✅");
-  }
-
-  const micGain = audioCtx.createGain();
-  micGain.gain.value = 0;
-  if (micTrack) {
-    const micStream  = new MediaStream([micTrack]);
-    const micSource  = audioCtx.createMediaStreamSource(micStream);
-    micSource.connect(micGain);
-    console.log("🎤 Mic connected to mixer (muted) ✅");
-  }
+  const audioCtx = new AudioContext(), destination = audioCtx.createMediaStreamDestination();
+  if (desktopAudioTrack) { const ds=new MediaStream([desktopAudioTrack]); audioCtx.createMediaStreamSource(ds).connect(destination); }
+  const micGain = audioCtx.createGain(); micGain.gain.value = 0;
+  if (micTrack) { const ms=new MediaStream([micTrack]); audioCtx.createMediaStreamSource(ms).connect(micGain); }
   micGain.connect(destination);
-
-  const mixedTrack = destination.stream.getAudioTracks()[0];
-  console.log("🔊 Mixed audio track created:", mixedTrack?.label);
-
-  return { audioCtx, mixedTrack, micGain };
+  return { audioCtx, mixedTrack: destination.stream.getAudioTracks()[0], micGain };
 };
 
 const wireHostAudio = (call, audioRef) => {
-  let audioSetup = false;
-
-  const playTrack = (track) => {
-    if (track.kind !== "audio") return;
-    if (audioSetup) { console.log("🔊 wireHostAudio: duplicate ignored"); return; }
-    audioSetup = true;
-
-    const audioEl = audioRef.current;
-    if (!audioEl) { console.warn("🔊 hostAudioRef null"); return; }
-
-    console.log(`🔊 Host got viewer audio: state=${track.readyState} enabled=${track.enabled}`);
-    const ms = new MediaStream([track]);
-    audioEl.srcObject = ms;
-    audioEl.volume    = 1.0;
-    audioEl.muted     = false;
-    audioEl.play()
-      .then(() => console.log("🔊 Host audio playing ✅"))
-      .catch(e  => console.warn("🔊 host audio.play():", e.message));
+  let done = false;
+  const play = (track) => {
+    if (track.kind!=="audio"||done) return; done=true;
+    const el=audioRef.current; if (!el) return;
+    el.srcObject=new MediaStream([track]); el.volume=1.0; el.muted=false;
+    el.play().catch(()=>{});
   };
-
-  let polls = 0;
+  let polls=0;
   const attach = () => {
-    const pc = call.peerConnection;
-    if (!pc) {
-      if (polls++ < 200) setTimeout(attach, 25);
-      else console.warn("🔊 peerConnection never appeared");
-      return;
-    }
-    console.log(`🔊 pc found (poll=${polls})`);
-    pc.addEventListener("track", ev => {
-      console.log(`🔊 pc.track: ${ev.track.kind} state=${ev.track.readyState}`);
-      playTrack(ev.track);
-    });
-    pc.getReceivers().forEach(r => { if (r.track) playTrack(r.track); });
+    const pc=call.peerConnection; if (!pc) { if (polls++<200) setTimeout(attach,25); return; }
+    pc.addEventListener("track", ev=>play(ev.track));
+    pc.getReceivers().forEach(r=>{ if(r.track) play(r.track); });
   };
   attach();
+  call.on("stream", s=>s.getAudioTracks().forEach(play));
+};
 
-  call.on("stream", stream => {
-    console.log("🔊 call.on(stream):", stream.getTracks().map(t => `${t.kind} ${t.readyState}`));
-    stream.getAudioTracks().forEach(playTrack);
-  });
+// Safe call cleanup — removes listeners then closes
+const closeCall = (call) => {
+  if (!call) return;
+  try { call.removeAllListeners?.(); } catch {}
+  try { call.close(); } catch {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,15 +101,10 @@ const App = () => {
   const hostAudioCtxRef   = useRef(null);
   const hostMicGainRef    = useRef(null);
   const localStreamRef    = useRef(null);
-
-  const hostAudioRef    = useRef(null);
-  const viewerAudioRef  = useRef(null);
-  // Guard ref to prevent resetSession from running twice when the disconnecting
-  // side calls callRef.current.close() — which fires call.on("close") AND then
-  // resetSession() is called manually right after. Without this guard the two
-  // rapid back-to-back resets leave `connecting:true` in ConnectionScreen,
-  // making the Remote Connection ID input unclickable.
-  const isResettingRef  = useRef(false);
+  const hostAudioRef      = useRef(null);
+  const viewerAudioRef    = useRef(null);
+  const isResettingRef    = useRef(false);  // prevents double resetSession
+  const isConnectingRef   = useRef(false);  // true while viewer is waiting for host
 
   const [myId,             setMyId]            = useState("");
   const [currentScreen,    setCurrentScreen]   = useState("home");
@@ -180,42 +116,66 @@ const App = () => {
   const [sources,          setSources]         = useState([]);
   const [showPicker,       setShowPicker]      = useState(false);
   const [pendingCall,      setPendingCall]     = useState(null);
-  // FIX: Start sessionReset at null so ConnectionScreen can distinguish
-  // "never reset" (null) from "first reset" (1). The old value of 0 was
-  // falsy, causing the reset effect in ConnectionScreen to be skipped on
-  // the very first disconnect — leaving `connecting:true` and the Remote
-  // Connection ID input unclickable.
-  const [sessionReset, setSessionReset] = useState(null);
+  const [sessionReset,     setSessionReset]    = useState(null);
+
+  // connectError: { type: "unavailable"|"rejected"|"timeout"|"error"|"disconnected", message: string }
+  const [connectError, setConnectError] = useState(null);
 
   const stopMic = useCallback(() => {
     if (localMicStreamRef.current) {
-      localMicStreamRef.current.getTracks().forEach(t => { t.enabled = false; t.stop(); });
+      localMicStreamRef.current.getTracks().forEach(t => { t.enabled=false; t.stop(); });
       localMicStreamRef.current = null;
     }
     localMicTrackRef.current = null;
-    if (dummyTrackRef.current) {
-      dummyTrackRef.current._stop?.();
-      dummyTrackRef.current.stop();
-      dummyTrackRef.current = null;
-    }
-    if (hostAudioCtxRef.current) {
-      hostAudioCtxRef.current.close().catch(() => {});
-      hostAudioCtxRef.current = null;
-      hostMicGainRef.current  = null;
-    }
-    console.log("🎤 Mic stopped, audio mixer closed");
+    if (dummyTrackRef.current) { dummyTrackRef.current._stop?.(); dummyTrackRef.current.stop(); dummyTrackRef.current=null; }
+    if (hostAudioCtxRef.current) { hostAudioCtxRef.current.close().catch(()=>{}); hostAudioCtxRef.current=null; hostMicGainRef.current=null; }
   }, []);
 
   const stopAllAudio = useCallback(() => {
-    [hostAudioRef, viewerAudioRef].forEach(ref => {
-      if (ref.current) { ref.current.srcObject = null; ref.current.pause(); }
-    });
+    [hostAudioRef, viewerAudioRef].forEach(r => { if (r.current) { r.current.srcObject=null; r.current.pause(); } });
   }, []);
+
+  // ── resetSession ── single exit point back to home screen ─────────────────
+  // errorInfo: null | { type, message } — shown as banner in ConnectionScreen
+  const resetSession = useCallback((errorInfo = null) => {
+    if (isResettingRef.current) { console.log("🔄 resetSession: duplicate skipped"); return; }
+    isResettingRef.current  = true;
+    isConnectingRef.current = false;
+
+    ipcRenderer.send("set-global-capture", false);
+    ipcRenderer.send("session-ended");
+
+    setCurrentScreen("home");
+    setRemoteStream(null);
+    remoteStreamRef.current = null;
+    localStreamRef.current  = null;
+    remoteIdRef.current     = "";
+    dispatch(setShowSessionDialog(false));
+    dispatch(setSessionMode(-1));
+    stopMic();
+    stopAllAudio();
+
+    if (errorInfo) setConnectError(errorInfo);
+    setSessionReset(prev => (prev === null ? 1 : prev + 1));
+    setTimeout(() => { isResettingRef.current = false; }, 500);
+  }, [stopMic, stopAllAudio]);
+
+  // ── cancelConnecting ── viewer cancels before host responds ───────────────
+  // CORNER CASE: viewer clicks "Cancel" while waiting. Must close the pending
+  // PeerJS call and stop mic so host doesn't receive a ghost ring.
+  const cancelConnecting = useCallback(() => {
+    isConnectingRef.current = false;
+    const call = callRef.current; callRef.current = null;
+    closeCall(call);
+    stopMic();
+    remoteIdRef.current = "";
+    setCurrentScreen("home");
+    setSessionReset(prev => (prev === null ? 1 : prev + 1));
+  }, [stopMic]);
 
   useEffect(() => {
     const uid = String(Math.floor(Math.random() * 9000000000) + 1000000000);
-    setMyId(uid);
-    userIdRef.current = uid;
+    setMyId(uid); userIdRef.current = uid;
     dispatch(setUserConnectionId(uid));
 
     const socket = io(CONFIG.SOCKET_URL, {
@@ -225,14 +185,27 @@ const App = () => {
     });
     socketRef.current = socket;
 
-    socket.on("connect",            () => { console.log("🟢 Socket:", socket.id); socket.emit("join", "User" + uid); });
-    socket.on("disconnect",         r  => console.warn("🔴 Socket:", r));
-    socket.on("connect_error",      e  => console.error("🔴 Socket:", e.message));
+    socket.on("connect",       () => { console.log("🟢 Socket:", socket.id); socket.emit("join", "User"+uid); });
+    socket.on("disconnect",    r  => console.warn("🔴 Socket:", r));
+    socket.on("connect_error", e  => console.error("🔴 Socket:", e.message));
+
+    // CORNER CASE: remote side closed the app or lost connection mid-session
     socket.on("remotedisconnected", () => setSessionEnded(true));
+
+    // CORNER CASE: host rejected the call (or cancelled source picker)
+    // Previously: only set callRejected+setCurrentScreen, never called resetSession
+    // so mic stream was never stopped and connecting state stayed stuck.
     socket.on("callrejected", () => {
-      setCallRejected(true); setCurrentScreen("home");
-      if (callRef.current) { callRef.current.close(); callRef.current = null; }
+      isConnectingRef.current = false;
+      const call = callRef.current; callRef.current = null;
+      closeCall(call);
+      stopMic();
+      remoteIdRef.current = "";
+      setCallRejected(true);
+      setCurrentScreen("home");
+      setSessionReset(prev => (prev === null ? 1 : prev + 1));
     });
+
     socket.on("mousemove",         e => ipcRenderer.send("mousemove",         e));
     socket.on("mousedown",         e => ipcRenderer.send("mousedown",         e));
     socket.on("mouseup",           e => ipcRenderer.send("mouseup",           e));
@@ -251,75 +224,67 @@ const App = () => {
         { urls: "stun:stun2.l.google.com:19302" },
       ]},
     });
+
     peer.on("open",         id  => console.log("✅ PeerJS:", id));
     peer.on("disconnected", ()  => { if (!peer.destroyed) peer.reconnect(); });
-    peer.on("error",        err => {
+
+    peer.on("error", err => {
       console.error("❌ Peer:", err.type, err.message);
-      if (err.type === "unavailable-id") window.location.reload();
+
+      // CORNER CASE A: viewer tries to connect to an ID that is offline / doesn't exist
+      if (err.type === "peer-unavailable") {
+        isConnectingRef.current = false;
+        const call = callRef.current; callRef.current = null;
+        closeCall(call);
+        stopMic();
+        remoteIdRef.current = "";
+        setCurrentScreen("home");
+        setConnectError({ type: "unavailable", message: "That ID is not online. Make sure the other person has DeskViewer open." });
+        setSessionReset(prev => (prev === null ? 1 : prev + 1));
+        return;
+      }
+
+      // CORNER CASE B: our own peer ID is taken — reload to get a fresh ID
+      if (err.type === "unavailable-id") { window.location.reload(); return; }
+
+      // CORNER CASE C: ICE/network failure during or before session
+      if (isConnectingRef.current || callRef.current) {
+        resetSession({ type: "error", message: "Connection failed due to a network error. Please try again." });
+      }
     });
-    peer.on("call", call => { setIncomingCall(call); setIncomingCallerId(call.peer); });
+
+    // CORNER CASE D: host is already in a session when another viewer calls
+    // Without this guard, the host would see a second incoming call dialog
+    // while they're actively sharing. Auto-reject so the host isn't interrupted.
+    peer.on("call", call => {
+      if (callRef.current) {
+        console.warn("📵 Busy — auto-rejecting call from", call.peer);
+        closeCall(call);
+        socket.emit("callrejected", { remoteId: call.peer });
+        return;
+      }
+      setIncomingCall(call);
+      setIncomingCallerId(call.peer);
+    });
 
     peerInstance.current = peer;
 
+    // CORNER CASE E: app closed while session active or connecting
     const onWillClose = () => {
-      console.log("🚪 App closing — notifying remote side...");
       const rid = remoteIdRef.current;
-      if (socket.connected && rid) {
-        socket.emit("remotedisconnected", { remoteId: rid });
-        console.log("📡 Sent remotedisconnected to", rid);
-      }
-      if (callRef.current) {
-        callRef.current.close();
-        callRef.current = null;
-      }
-      setTimeout(() => {
-        socket.disconnect();
-        ipcRenderer.send("cleanup-done");
-      }, 300);
+      if (socket.connected && rid) socket.emit("remotedisconnected", { remoteId: rid });
+      const call = callRef.current; callRef.current = null;
+      closeCall(call);
+      stopMic();
+      setTimeout(() => { socket.disconnect(); ipcRenderer.send("cleanup-done"); }, 300);
     };
     ipcRenderer.on("app-will-close", onWillClose);
 
     return () => {
       ipcRenderer.removeListener("app-will-close", onWillClose);
-      socket.disconnect();
-      peer.destroy();
-      stopMic();
-      stopAllAudio();
+      socket.disconnect(); peer.destroy(); stopMic(); stopAllAudio();
     };
   }, []);
-
-  const resetSession = useCallback(() => {
-    // GUARD: prevent double execution.
-    // When the LOCAL side clicks Disconnect, handleDisconnect calls
-    // callRef.current.close() which synchronously fires call.on("close"),
-    // which calls resetSession() — then handleDisconnect calls resetSession()
-    // again manually. Two rapid resets corrupt state and leave `connecting:true`
-    // in ConnectionScreen, making the Remote Connection ID input unclickable.
-    if (isResettingRef.current) {
-      console.log("🔄 resetSession: already resetting, skipping duplicate call");
-      return;
-    }
-    isResettingRef.current = true;
-
-    ipcRenderer.send("set-global-capture", false);
-    ipcRenderer.send("session-ended");
-
-    setCurrentScreen("home");
-    setRemoteStream(null);
-    remoteStreamRef.current  = null;
-    localStreamRef.current   = null;
-    remoteIdRef.current      = "";
-    dispatch(setShowSessionDialog(false));
-    dispatch(setSessionMode(-1));
-    stopMic();
-    stopAllAudio();
-    setSessionReset(prev => (prev === null ? 1 : prev + 1));
-
-    // Release the guard after a short delay so the next NEW session can reset again
-    setTimeout(() => { isResettingRef.current = false; }, 500);
-
-    console.log("🔄 Session reset");
-  }, [stopMic, stopAllAudio]);
 
   // ── HOST: Accept ──────────────────────────────────────────────────────────
   const acceptCall = useCallback(async () => {
@@ -331,54 +296,48 @@ const App = () => {
     setSources(srcs); setShowPicker(true);
   }, [incomingCall]);
 
+  // ── HOST: Reject ──────────────────────────────────────────────────────────
+  // CORNER CASE: host clicks Reject → viewer must return to home screen
+  // Previously this just closed the call locally without notifying the viewer
+  // via socket, so the viewer stayed stuck on "Waiting for host..."
   const rejectCall = useCallback(() => {
     const call = incomingCall; const callerId = incomingCallerId;
     setIncomingCall(null); setIncomingCallerId("");
-    if (call) call.close();
+    closeCall(call);
     socketRef.current?.emit("callrejected", { remoteId: callerId });
   }, [incomingCall, incomingCallerId]);
 
-  // ── HOST: source selected → answer ───────────────────────────────────────
+  // ── HOST: Screen source selected ──────────────────────────────────────────
   const onSourceSelected = useCallback(async (sourceId) => {
     setShowPicker(false);
-    const call = pendingCall;
-    if (!call) return;
+    const call = pendingCall; if (!call) return;
 
     await ipcRenderer.invoke("MINIMIZE_WIN");
     await new Promise(r => setTimeout(r, 500));
 
     const tryCapture = (withAudio) => navigator.mediaDevices.getUserMedia({
       audio: withAudio ? { mandatory: { chromeMediaSource: "desktop" } } : false,
-      video: { mandatory: {
-        chromeMediaSource: "desktop", chromeMediaSourceId: sourceId,
-        minWidth: 1280, maxWidth: 1920, minHeight: 720, maxHeight: 1080,
-      }},
+      video: { mandatory: { chromeMediaSource:"desktop", chromeMediaSourceId:sourceId, minWidth:1280, maxWidth:1920, minHeight:720, maxHeight:1080 }},
     });
 
     try {
       let screenStream;
-      try   { screenStream = await tryCapture(true);  }
-      catch { screenStream = await tryCapture(false); }
+      try { screenStream = await tryCapture(true); } catch { screenStream = await tryCapture(false); }
 
       const desktopAudioTrack = screenStream.getAudioTracks()[0] ?? null;
       const screenVideoTrack  = screenStream.getVideoTracks()[0];
 
       const micStream = await getMicStream();
       const micTrack  = micStream.getAudioTracks()[0] ?? null;
-      localMicStreamRef.current = micStream;
-      localMicTrackRef.current  = micTrack;
+      localMicStreamRef.current = micStream; localMicTrackRef.current = micTrack;
 
       const { audioCtx, mixedTrack, micGain } = buildHostAudioMix(desktopAudioTrack, micTrack);
-      hostAudioCtxRef.current = audioCtx;
-      hostMicGainRef.current  = micGain;
+      hostAudioCtxRef.current = audioCtx; hostMicGainRef.current = micGain;
 
       const combined = new MediaStream();
       if (screenVideoTrack) combined.addTrack(screenVideoTrack);
       combined.addTrack(mixedTrack);
-
       localStreamRef.current = combined;
-
-      console.log("📡 Host answering:", combined.getTracks().map(t => `${t.kind} label="${t.label}"`));
 
       wireHostAudio(call, hostAudioRef);
       call.answer(combined);
@@ -391,78 +350,120 @@ const App = () => {
       dispatch(setShowSessionDialog(false));
       ipcRenderer.send("session-started");
       setTimeout(() => ipcRenderer.invoke("RESTORE_WIN"), 1000);
-      call.on("close", resetSession);
-      call.on("error", e => console.error("Host call error:", e));
+
+      call.on("close", () => resetSession());
+      call.on("error", e => {
+        console.error("Host call error:", e);
+        resetSession({ type: "error", message: "Connection was lost unexpectedly." });
+      });
     } catch (e) {
+      // CORNER CASE: screen capture permission denied or source disappeared
       ipcRenderer.invoke("RESTORE_WIN");
-      alert("Screen capture failed: " + e.message);
+      setPendingCall(null);
+      setConnectError({ type: "error", message: "Screen capture failed: " + e.message });
       socketRef.current?.emit("callrejected", { remoteId: call.peer });
     }
   }, [pendingCall, resetSession]);
 
-  // ── VIEWER: call the host ─────────────────────────────────────────────────
+  // ── HOST: Cancel source picker ────────────────────────────────────────────
+  // CORNER CASE: host opened picker then clicked Cancel (changed their mind).
+  // Must send callrejected to the viewer so they return to home screen.
+  const onSourceCancelled = useCallback(() => {
+    setShowPicker(false);
+    if (pendingCall) {
+      closeCall(pendingCall);
+      socketRef.current?.emit("callrejected", { remoteId: pendingCall.peer });
+      setPendingCall(null);
+    }
+  }, [pendingCall]);
+
+  // ── VIEWER: Start call ────────────────────────────────────────────────────
   const startCall = useCallback(async (remoteId) => {
     const peer = peerInstance.current;
-    if (!peer || peer.destroyed) { alert("Not connected to server yet."); return; }
+    // CORNER CASE: peer not ready yet
+    if (!peer || peer.destroyed) {
+      setConnectError({ type: "error", message: "Not connected to server yet. Please wait a moment and try again." });
+      setSessionReset(prev => (prev === null ? 1 : prev + 1));
+      return;
+    }
 
+    setConnectError(null);
+    isConnectingRef.current = true;
     unlockAudio(viewerAudioRef.current);
-
     dispatch(setRemoteConnectionId(remoteId));
     remoteIdRef.current = remoteId;
 
-    const micStream  = await getMicStream();
-    const micTrack   = micStream.getAudioTracks()[0];
-    localMicStreamRef.current = micStream;
-    localMicTrackRef.current  = micTrack;
+    const micStream = await getMicStream();
+    const micTrack  = micStream.getAudioTracks()[0];
+    localMicStreamRef.current = micStream; localMicTrackRef.current = micTrack;
 
     const dummyVideo = makeDummyVideoTrack();
     dummyTrackRef.current = dummyVideo;
-
     const outStream = new MediaStream();
     outStream.addTrack(dummyVideo);
     if (micTrack) outStream.addTrack(micTrack);
 
-    console.log("📞 Viewer calling:", outStream.getTracks().map(t => `${t.kind} enabled=${t.enabled}`));
-
     const call = peer.call(String(remoteId), outStream);
-    if (!call) { alert("Could not reach that peer."); return; }
 
-    setTimeout(() => {
-      if (localMicTrackRef.current) {
-        localMicTrackRef.current.enabled = false;
-        console.log("🔇 Viewer mic muted (default)");
-      }
-    }, 200);
+    // CORNER CASE: peer.call() returned null (peer not ready internally)
+    if (!call) {
+      isConnectingRef.current = false;
+      stopMic(); remoteIdRef.current = "";
+      setConnectError({ type: "error", message: "Could not initiate call. Please try again." });
+      setSessionReset(prev => (prev === null ? 1 : prev + 1));
+      return;
+    }
+
+    setTimeout(() => { if (localMicTrackRef.current) localMicTrackRef.current.enabled = false; }, 200);
 
     callRef.current = call;
     setCurrentScreen("viewing");
 
     call.on("stream", stream => {
-      console.log("🎉 Viewer stream:", stream.getTracks().map(t => `${t.kind} en=${t.enabled} state=${t.readyState}`));
+      isConnectingRef.current = false;
       remoteStreamRef.current = stream;
       setRemoteStream(stream);
       dispatch(setSessionMode(1));
       dispatch(setSessionStartTime(new Date()));
     });
-    call.on("error", err => { console.error("Call error:", err); resetSession(); });
-    call.on("close", ()  => resetSession());
-  }, [resetSession]);
 
-  useEffect(() => { if (sessionEnded) { resetSession(); setSessionEnded(false); } }, [sessionEnded]);
+    // CORNER CASE: network failure mid-call
+    call.on("error", err => {
+      console.error("Viewer call error:", err);
+      resetSession({ type: "error", message: "Connection failed. Please try again." });
+    });
+
+    // CORNER CASE: call closed before stream arrived (host vanished after answering)
+    call.on("close", () => resetSession());
+  }, [resetSession, stopMic]);
+
+  // ── Session ended by remote side (socket event) ───────────────────────────
   useEffect(() => {
-    if (callRejected) { const t = setTimeout(() => setCallRejected(false), 4000); return () => clearTimeout(t); }
+    if (!sessionEnded) return;
+    resetSession({ type: "disconnected", message: "The other side ended the session." });
+    setSessionEnded(false);
+  }, [sessionEnded]);
+
+  // Auto-clear connect error after 6s
+  useEffect(() => {
+    if (!connectError) return;
+    const t = setTimeout(() => setConnectError(null), 6000);
+    return () => clearTimeout(t);
+  }, [connectError]);
+
+  // Auto-clear rejected banner after 4s
+  useEffect(() => {
+    if (!callRejected) return;
+    const t = setTimeout(() => setCallRejected(false), 4000);
+    return () => clearTimeout(t);
   }, [callRejected]);
 
+  // ── Disconnect (initiated locally, called from AppScreen or ConnectionScreen) ─
   const handleDisconnect = useCallback(() => {
     const rid = remoteIdRef.current;
     if (socketRef.current && rid) socketRef.current.emit("remotedisconnected", { remoteId: rid });
-    // Set isResettingRef BEFORE calling close() so when call.on("close") fires
-    // and calls resetSession(), the guard lets it through as the FIRST call,
-    // then blocks the manual resetSession() below as the duplicate.
-    // Either way only one reset runs — the input is always left clickable.
-    const call = callRef.current;
-    callRef.current = null;
-    if (call) call.close();
+    const call = callRef.current; callRef.current = null;
+    closeCall(call);
     resetSession();
   }, [resetSession]);
 
@@ -510,22 +511,18 @@ const App = () => {
         acceptCall={acceptCall}
         rejectCall={rejectCall}
         startCall={startCall}
+        cancelConnecting={cancelConnecting}
         onEndSession={handleDisconnect}
         callRejected={callRejected}
         sessionReset={sessionReset}
+        connectError={connectError}
+        clearConnectError={() => setConnectError(null)}
       />
       {showPicker && (
         <SourcePicker
           sources={sources}
           onSelect={onSourceSelected}
-          onCancel={() => {
-            setShowPicker(false);
-            if (pendingCall) {
-              pendingCall.close();
-              socketRef.current?.emit("callrejected", { remoteId: pendingCall.peer });
-              setPendingCall(null);
-            }
-          }}
+          onCancel={onSourceCancelled}
         />
       )}
     </>

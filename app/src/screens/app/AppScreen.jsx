@@ -1,7 +1,4 @@
 // AppScreen.jsx — VIEWER side
-// Role: viewer  →  annotation palette: REDS  (#ef4444 family)
-// Remote strokes from host arrive via socket → drawn on theirCanvasRef (BLUES)
-// Two canvas layers stacked: theirCanvas (bottom, host strokes) + myCanvas (top, viewer strokes)
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import SessionInfo from "../../components/SessionInfo";
@@ -15,14 +12,10 @@ const isImg  = (t="") => t.startsWith("image/");
 const msgId  = () => Math.random().toString(36).slice(2);
 const EMOJIS = ["😀","😂","😍","🥰","😎","😭","😅","🤔","😮","😡","👍","👎","❤️","🔥","✅","❌","🎉","🙏","💯","👀","🤣","😊","😇","🥳","😴","🤯","🤝","💪","🎊","👋","✌️","🫡","💬","📎","🖼️","🚀","⭐","💡","🔔","😆"];
 
-// ── Role-based annotation colours ─────────────────────────────────────────────
-// VIEWER = reds/oranges.  HOST = blues (defined in HostScreen).
-// Keeping palettes role-locked so both sides always know who drew what.
 const VIEWER_COLORS = ["#fca5a5","#f87171","#ef4444","#dc2626","#fb923c","#f59e0b","#ffffff","#000000"];
 const ANNO_TOOLS    = ["pen","arrow","rect","text","eraser"];
 const ANNO_SIZES    = [2,4,7,12];
 
-// ── Shared drawing helpers (pure, no state) ────────────────────────────────
 const getCanvasXY = (e, ref) => {
   const c = ref.current; if (!c) return {x:0,y:0};
   const r = c.getBoundingClientRect();
@@ -46,15 +39,14 @@ const preserveResize = (canvas, w, h) => {
   canvas.getContext("2d").drawImage(tmp,0,0);
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
 const AppScreen = ({
   remoteStream, remoteStreamRef, socketRef, callRef,
   remoteIdRef, userIdRef, localMicTrackRef,
   audioRef, onDisconnect, onEndSession,
 }) => {
   const videoRef        = useRef(null);
-  const myCanvasRef     = useRef(null);    // viewer's own strokes (reds)
-  const theirCanvasRef  = useRef(null);    // host's strokes (blues), read-only
+  const myCanvasRef     = useRef(null);
+  const theirCanvasRef  = useRef(null);
   const _localAudioRef  = useRef(null);
   const _audioRef       = audioRef ?? _localAudioRef;
   const dispatch        = useDispatch();
@@ -62,12 +54,10 @@ const AppScreen = ({
   const controlRef      = useRef(false);
   const toolbarTimerRef = useRef(null);
 
-  // Recording
   const recorderRef  = useRef(null);
   const recChunksRef = useRef([]);
   const recTimerRef  = useRef(null);
 
-  // Annotation drawing state (refs to avoid stale closure in pointer handlers)
   const drawingRef   = useRef(false);
   const startRef     = useRef({x:0,y:0});
   const snapRef      = useRef(null);
@@ -82,7 +72,6 @@ const AppScreen = ({
   const [showToolbar,    setShowToolbar]     = useState(true);
   const [hostMinimized,  setHostMinimized]   = useState(false);
 
-  // Chat
   const [showChat,  setShowChat]  = useState(false);
   const [messages,  setMessages]  = useState([]);
   const [chatInput, setChatInput] = useState("");
@@ -93,11 +82,9 @@ const AppScreen = ({
   const fileInputRef = useRef(null);
   const textareaRef  = useRef(null);
 
-  // Recording state
   const [recording,   setRecording]   = useState(false);
   const [recDuration, setRecDuration] = useState(0);
 
-  // Clipboard toast
   const [clipToast, setClipToast] = useState("");
   const clipTimerRef = useRef(null);
   const showClipToast = useCallback((msg) => {
@@ -106,20 +93,16 @@ const AppScreen = ({
     clipTimerRef.current = setTimeout(() => setClipToast(""), 2500);
   }, []);
 
-  // Quality
   const [quality, setQuality] = useState(null);
 
-  // Annotation state
   const [annoMode,    setAnnoMode]    = useState(false);
   const [annoTool,    setAnnoTool]    = useState("pen");
-  const [annoColor,   setAnnoColor]   = useState("#ef4444");  // default mid-red
+  const [annoColor,   setAnnoColor]   = useState("#ef4444");
   const [annoSize,    setAnnoSize]    = useState(4);
   const [annoTextVal, setAnnoTextVal] = useState("");
   const [showAnnoBar, setShowAnnoBar] = useState(false);
-  // Track if host has any annotations on screen (for legend display)
   const [hostHasAnno, setHostHasAnno] = useState(false);
 
-  // ── Stream attachment ──────────────────────────────────────────────────────
   const attachStream = useCallback((stream) => {
     if (!stream) return;
     if (videoRef.current) {
@@ -142,7 +125,6 @@ const AppScreen = ({
   useEffect(() => { if (remoteStream)            attachStream(remoteStream);            }, [remoteStream, attachStream]);
   useEffect(() => { if (remoteStreamRef?.current) attachStream(remoteStreamRef.current); }, []);
 
-  // ── Mute sync ──────────────────────────────────────────────────────────────
   useEffect(() => {
     const t = setTimeout(() => { const tr=localMicTrackRef?.current; if(tr) setMuted(!tr.enabled); }, 300);
     return () => clearTimeout(t);
@@ -152,7 +134,6 @@ const AppScreen = ({
     tr.enabled=!tr.enabled; setMuted(!tr.enabled);
   };
 
-  // ── Toolbar auto-hide ──────────────────────────────────────────────────────
   const scheduleHide = useCallback(() => {
     clearTimeout(toolbarTimerRef.current);
     if (!controlRef.current && !annoMode)
@@ -168,7 +149,6 @@ const AppScreen = ({
 
   useEffect(() => { if (annoMode) { setShowToolbar(true); clearTimeout(toolbarTimerRef.current); } }, [annoMode]);
 
-  // ── IPC window events ──────────────────────────────────────────────────────
   useEffect(() => {
     const onMin    = () => { videoRef.current&&(videoRef.current.style.cursor="default"); setShowToolbar(true); clearTimeout(toolbarTimerRef.current); };
     const onRes    = (_,p) => { if(videoRef.current) videoRef.current.style.cursor=(p?.controlActive&&controlRef.current)?"none":"default"; if(!controlRef.current){setShowToolbar(true);scheduleHide();} };
@@ -193,7 +173,6 @@ const AppScreen = ({
     clearInterval(recTimerRef.current);
   }, []);
 
-  // ── RECORDING ──────────────────────────────────────────────────────────────
   const startRecording = useCallback(() => {
     const stream = remoteStreamRef?.current; if (!stream) return;
     try {
@@ -226,7 +205,6 @@ const AppScreen = ({
 
   const fmtDur = (s) => `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
 
-  // ── CLIPBOARD SYNC ─────────────────────────────────────────────────────────
   useEffect(() => {
     const socket=socketRef.current; if(!socket) return;
     const onClip = ({text}) => {
@@ -250,7 +228,6 @@ const AppScreen = ({
     return () => document.removeEventListener("copy", onCopy);
   }, [showClipToast]);
 
-  // ── CONNECTION QUALITY ─────────────────────────────────────────────────────
   useEffect(() => {
     let prevBytes=0, prevTs=0;
     const poll = async () => {
@@ -278,7 +255,6 @@ const AppScreen = ({
   const qColor = () => { if(!quality?.rtt) return "#9ca3af"; if(quality.rtt<80) return "#4ade80"; if(quality.rtt<200) return "#facc15"; return "#f87171"; };
   const qLabel = () => { if(!quality?.rtt) return "—"; if(quality.rtt<80) return "Good"; if(quality.rtt<200) return "Fair"; return "Poor"; };
 
-  // ── ANNOTATION — canvas resize ─────────────────────────────────────────────
   useEffect(() => {
     const ro = new ResizeObserver(() => {
       const v=videoRef.current; if(!v) return;
@@ -290,11 +266,10 @@ const AppScreen = ({
     return () => ro.disconnect();
   }, []);
 
-  // ── ANNOTATION — receive host strokes ──────────────────────────────────────
   useEffect(() => {
     const socket=socketRef.current; if(!socket) return;
     const onFrame = ({role, dataUrl, clear}) => {
-      if(role !== "host") return;                   // only process host frames
+      if(role !== "host") return;
       const c=theirCanvasRef.current; if(!c) return;
       if(clear) { c.getContext("2d").clearRect(0,0,c.width,c.height); setHostHasAnno(false); return; }
       if(!dataUrl) return;
@@ -311,7 +286,6 @@ const AppScreen = ({
     return () => socket.off("annotation-frame", onFrame);
   }, []);
 
-  // ── ANNOTATION — emit my strokes ───────────────────────────────────────────
   const emitMyFrame = useCallback((clear=false) => {
     const s=socketRef.current, rid=String(remoteIdRef.current||""), uid=String(userIdRef.current||"");
     if(!s?.connected||!rid) return;
@@ -320,7 +294,6 @@ const AppScreen = ({
     s.emit("annotation-frame", payload);
   }, []);
 
-  // ── ANNOTATION — pointer handlers ──────────────────────────────────────────
   const annoPointerDown = useCallback((e) => {
     if(!annoMode||controlRef.current) return;
     e.preventDefault(); e.stopPropagation();
@@ -380,7 +353,6 @@ const AppScreen = ({
     if(next && controlRef.current) { controlRef.current=false; setControlEnabled(false); videoRef.current&&(videoRef.current.style.cursor="default"); ipcRenderer.send("set-global-capture",false); }
   };
 
-  // ── CHAT ───────────────────────────────────────────────────────────────────
   useEffect(() => {
     const socket=socketRef.current; if(!socket) return;
     const onMsg=(msg)=>{ setMessages(p=>[...p,msg]); if(!showChat)setUnread(u=>u+1); };
@@ -417,7 +389,6 @@ const AppScreen = ({
     } catch(e){console.error("Upload failed:",e);} finally{setUploading(false);}
   };
 
-  // ── REMOTE CONTROL ─────────────────────────────────────────────────────────
   const getCoords = (e) => {
     const v=videoRef.current; if(!v) return {x:0,y:0};
     const r=v.getBoundingClientRect(),sw=v.videoWidth||1280,sh=v.videoHeight||720;
@@ -468,20 +439,39 @@ const AppScreen = ({
     ipcRenderer.send("set-global-capture",next);
   };
 
+  // ── DISCONNECT ─────────────────────────────────────────────────────────────
+  // FIX: Do NOT touch callRef or close the call here.
+  // Previously this function did: callRef.current.close(); callRef.current=null; onDisconnect()
+  // That caused call.on("close") to fire → resetSession() [1st call],
+  // then App.js handleDisconnect also called resetSession() [2nd call].
+  // The double reset raced and left `connecting:true` in ConnectionScreen,
+  // making the Remote Connection ID input unclickable after returning home.
+  // Now: just stop local media, notify via socket, then delegate to onDisconnect().
+  // App.js handleDisconnect owns the call lifecycle exclusively.
   const handleDisconnect = () => {
     if(!window.confirm("End this session?")) return;
-    if(recorderRef.current?.state!=="inactive") recorderRef.current?.stop(); clearInterval(recTimerRef.current);
-    if(_audioRef.current) _audioRef.current.srcObject=null;
-    if(videoRef.current)  videoRef.current.srcObject=null;
-    setMessages([]); setShowChat(false); setUnread(0);
-    ipcRenderer.send("set-global-capture",false);
-    const rid=remoteIdRef?.current;
-    if(socketRef.current&&rid) socketRef.current.emit("remotedisconnected",{remoteId:rid});
-    if(callRef.current){callRef.current.close();callRef.current=null;}
+
+    // Stop recording if active
+    if(recorderRef.current?.state!=="inactive") recorderRef.current?.stop();
+    clearInterval(recTimerRef.current);
+
+    // Release remote control capture
+    ipcRenderer.send("set-global-capture", false);
+    controlRef.current = false;
+
+    // Clear local media elements
+    if(_audioRef.current) _audioRef.current.srcObject = null;
+    if(videoRef.current)  videoRef.current.srcObject  = null;
+
+    // Notify the remote side via socket
+    const rid = remoteIdRef?.current;
+    if(socketRef.current && rid) socketRef.current.emit("remotedisconnected", {remoteId: rid});
+
+    // Delegate call.close() + resetSession() entirely to App.js
+    // This prevents the double-resetSession race condition
     onDisconnect();
   };
 
-  // ── Style helpers ──────────────────────────────────────────────────────────
   const tbtn=(bg,active)=>({display:"flex",alignItems:"center",gap:5,padding:"6px 12px",borderRadius:7,background:bg,border:active?"1.5px solid rgba(255,255,255,0.4)":"1.5px solid transparent",color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"});
   const ibtn=(title,fn,icon,badge)=>(
     <button title={title} onClick={fn} style={{position:"relative",background:"rgba(255,255,255,0.1)",border:"1.5px solid transparent",borderRadius:7,padding:"6px 10px",color:"#fff",cursor:"pointer",display:"flex",alignItems:"center"}}>
@@ -502,15 +492,12 @@ const AppScreen = ({
     );
   };
 
-  // ── RENDER ─────────────────────────────────────────────────────────────────
   return (
     <div style={{width:"100vw",height:"100vh",background:"#0a0a0a",display:"flex",flexDirection:"column",overflow:"hidden"}}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}`}</style>
 
-      {/* CLIPBOARD TOAST */}
       {clipToast&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:400,background:"#1f2937",color:"#fff",fontSize:12,fontWeight:600,borderRadius:8,padding:"8px 16px",boxShadow:"0 4px 16px rgba(0,0,0,0.4)",pointerEvents:"none",whiteSpace:"nowrap"}}>{clipToast}</div>}
 
-      {/* TOOLBAR */}
       <div style={{flexShrink:0,overflow:"hidden",height:showToolbar?54:0,transition:"height 0.2s ease",display:"flex",alignItems:"center",justifyContent:"space-between",padding:showToolbar?"0 14px":0,background:"rgba(13,13,18,0.98)",borderBottom:showToolbar?"1px solid rgba(255,255,255,0.07)":"none"}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <div style={{width:7,height:7,borderRadius:"50%",background:"#4ade80",boxShadow:"0 0 6px #4ade80"}}/>
@@ -548,7 +535,6 @@ const AppScreen = ({
         </div>
       </div>
 
-      {/* ANNOTATION TOOLBAR */}
       {annoMode&&showAnnoBar&&(
         <div style={{flexShrink:0,display:"flex",alignItems:"center",gap:10,padding:"6px 14px",background:"rgba(40,5,5,0.97)",borderBottom:"1px solid rgba(239,68,68,0.3)",flexWrap:"wrap"}}>
           <span style={{fontSize:11,fontWeight:700,color:"#f87171",marginRight:4}}>🔴 Viewer (you)</span>
@@ -590,11 +576,9 @@ const AppScreen = ({
         </div>
       )}
 
-      {/* MAIN */}
       <div style={{flex:1,display:"flex",overflow:"hidden"}}>
         <div style={{flex:1,position:"relative",background:"#000",overflow:"hidden"}}>
 
-          {/* Connecting overlay */}
           {!videoPlaying&&(
             <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"#111827",zIndex:5}}>
               <svg style={{width:48,height:48,color:"#38bdf8",marginBottom:16}} viewBox="0 0 24 24" fill="none"><circle style={{opacity:0.25}} cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path style={{opacity:0.75}} fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
@@ -606,10 +590,8 @@ const AppScreen = ({
 
           <video ref={videoRef} autoPlay playsInline muted style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}}/>
 
-          {/* HOST strokes layer — bottom, always pointer-events:none */}
           <canvas ref={theirCanvasRef} style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",display:"block",pointerEvents:"none",zIndex:2}}/>
 
-          {/* VIEWER strokes layer — top, interactive when annotating */}
           <canvas ref={myCanvasRef}
             onPointerDown={annoPointerDown} onPointerMove={annoPointerMove}
             onPointerUp={annoPointerUp} onPointerLeave={annoPointerUp}
@@ -617,7 +599,6 @@ const AppScreen = ({
               cursor:annoMode?(annoTool==="eraser"?"cell":annoTool==="text"?"text":"crosshair"):"default",
               pointerEvents:annoMode?"all":"none",touchAction:"none",zIndex:3}}/>
 
-          {/* ANNOTATION LEGEND — shown when either side is annotating */}
           {(annoMode||hostHasAnno)&&(
             <div style={{position:"absolute",bottom:12,left:12,zIndex:10,display:"flex",gap:8,flexDirection:"column"}}>
               {annoMode&&<span style={{background:"rgba(0,0,0,0.75)",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:700,color:"#f87171",display:"flex",alignItems:"center",gap:5}}><span style={{width:10,height:10,borderRadius:"50%",background:"#ef4444",display:"inline-block"}}/>You (Viewer)</span>}
@@ -625,7 +606,6 @@ const AppScreen = ({
             </div>
           )}
 
-          {/* Host minimized */}
           {hostMinimized&&(
             <div style={{position:"absolute",inset:0,zIndex:10,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.85)",backdropFilter:"blur(4px)"}}>
               <svg style={{width:48,height:48,color:"#f59e0b",marginBottom:14}} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 9l-7 7-7-7"/></svg>
@@ -635,7 +615,6 @@ const AppScreen = ({
           )}
         </div>
 
-        {/* CHAT PANEL */}
         {showChat&&(
           <div style={{width:300,display:"flex",flexDirection:"column",background:"#111827",borderLeft:"1px solid rgba(255,255,255,0.07)",flexShrink:0,position:"relative"}}>
             <div style={{padding:"10px 14px",borderBottom:"1px solid rgba(255,255,255,0.07)",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
