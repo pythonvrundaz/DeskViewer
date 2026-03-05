@@ -144,6 +144,10 @@ const App = () => {
 
     ipcRenderer.send("set-global-capture", false);
     ipcRenderer.send("session-ended");
+    // Tell server to remove session pair so unexpected-disconnect doesn't double-notify
+    if (socketRef.current?.connected && userIdRef.current) {
+      socketRef.current.emit("session-unpair", { myId: userIdRef.current });
+    }
 
     setCurrentScreen("home");
     setRemoteStream(null);
@@ -236,68 +240,130 @@ const App = () => {
     socket.on("keyup",             e => ipcRenderer.send("keyup",             e));
     socket.on("stream-resolution", e => ipcRenderer.send("stream-resolution", e));
 
-    const peer = new Peer(uid, {
-      host: CONFIG.PEER_HOST, port: CONFIG.PEER_PORT,
-      path: CONFIG.PEER_PATH, secure: CONFIG.PEER_SECURE, debug: 2,
-      config: { iceServers: [
-        { urls: "stun:stun.l.google.com:19302"  },
-        { urls: "stun:stun1.l.google.com:19302" },
-        { urls: "stun:stun2.l.google.com:19302" },
-      ]},
-    });
+    // ── Peer factory — call this to (re)create the PeerJS instance ───────────
+    // We extract this into a named function so we can call it again after
+    // a "network" error, which leaves the peer in an unrecoverable state
+    // that requires a full destroy + recreate (peer.reconnect() is not enough).
+    let peerReconnectTimer = null;
+    let peerReconnectCount = 0;
 
-    peer.on("open",         id  => console.log("✅ PeerJS:", id));
-    peer.on("disconnected", ()  => { if (!peer.destroyed) peer.reconnect(); });
-
-    peer.on("error", err => {
-      console.error("❌ Peer:", err.type, err.message);
-
-      // CORNER CASE A: viewer tries to connect to an ID that is offline / doesn't exist
-      if (err.type === "peer-unavailable") {
-        isConnectingRef.current = false;
-        const call = callRef.current; callRef.current = null;
-        closeCall(call);
-        stopMic();
-        remoteIdRef.current = "";
-        setCurrentScreen("home");
-        setConnectError({ type: "unavailable", message: "That ID is not online. Make sure the other person has DeskViewer open." });
-        setSessionReset(prev => (prev === null ? 1 : prev + 1));
-        return;
+    const createPeer = () => {
+      // Destroy any existing peer cleanly before creating a new one
+      if (peerInstance.current && !peerInstance.current.destroyed) {
+        try { peerInstance.current.destroy(); } catch {}
       }
+      clearTimeout(peerReconnectTimer);
 
-      // CORNER CASE B: our own peer ID is taken — reload to get a fresh ID
-      if (err.type === "unavailable-id") { window.location.reload(); return; }
-
-      // CORNER CASE C: ICE/network failure during or before session
-      if (isConnectingRef.current || callRef.current) {
-        resetSession({ type: "error", message: "Connection failed due to a network error. Please try again." });
-      }
-    });
-
-    // CORNER CASE D: host is already in a session when another viewer calls — auto-reject
-    // CORNER CASE NEW: viewer cancels while host is looking at the modal.
-    // We attach a call.on("close") listener so if the viewer cancels (closing
-    // the PeerJS connection) the modal automatically disappears on the host side.
-    peer.on("call", call => {
-      if (callRef.current) {
-        console.warn("📵 Busy — auto-rejecting call from", call.peer);
-        closeCall(call);
-        socket.emit("callrejected", { remoteId: call.peer });
-        return;
-      }
-
-      // Listen for viewer-side cancel: if the call closes before host accepts,
-      // dismiss the modal so host isn't left with a zombie dialog
-      call.on("close", () => {
-        setIncomingCall(prev => (prev === call ? null : prev));
-        setIncomingCallerId(prev => (prev === call.peer ? "" : prev));
+      const peer = new Peer(uid, {
+        host: CONFIG.PEER_HOST, port: CONFIG.PEER_PORT,
+        path: CONFIG.PEER_PATH, secure: CONFIG.PEER_SECURE, debug: 2,
+        config: { iceServers: [
+          { urls: "stun:stun.l.google.com:19302"  },
+          { urls: "stun:stun1.l.google.com:19302" },
+          { urls: "stun:stun2.l.google.com:19302" },
+        ]},
       });
 
-      setIncomingCall(call);
-      setIncomingCallerId(call.peer);
-    });
+      peer.on("open", id => {
+        console.log("✅ PeerJS connected:", id);
+        peerReconnectCount = 0; // reset backoff on successful connection
+        // Clear any "server unreachable" error that was showing
+        setConnectError(prev => prev?.type === "server" ? null : prev);
+      });
 
-    peerInstance.current = peer;
+      // "disconnected" = PeerJS lost its WebSocket to the server but peer not destroyed.
+      // Safe to call reconnect() here — this handles normal transient drops.
+      peer.on("disconnected", () => {
+        console.warn("⚡ PeerJS disconnected from server — attempting reconnect...");
+        if (!peer.destroyed) {
+          try { peer.reconnect(); } catch (e) {
+            console.warn("peer.reconnect() failed:", e.message);
+          }
+        }
+      });
+
+      peer.on("error", err => {
+        console.error("❌ Peer:", err.type, err.message);
+
+        // ── peer-unavailable: target ID is offline ──────────────────────────
+        if (err.type === "peer-unavailable") {
+          isConnectingRef.current = false;
+          const call = callRef.current; callRef.current = null;
+          closeCall(call);
+          stopMic();
+          remoteIdRef.current = "";
+          setCurrentScreen("home");
+          setConnectError({ type: "unavailable", message: "That ID is not online. Make sure the other person has DeskViewer open." });
+          setSessionReset(prev => (prev === null ? 1 : prev + 1));
+          return;
+        }
+
+        // ── unavailable-id: our ID is already taken ─────────────────────────
+        if (err.type === "unavailable-id") {
+          window.location.reload();
+          return;
+        }
+
+        // ── network / server-error: lost connection to PeerJS server ────────
+        // peer.reconnect() does NOT work after a "network" error — the peer
+        // is left in an error state. We must destroy and recreate the peer.
+        // Use exponential backoff: 2s, 4s, 8s, max 30s.
+        if (err.type === "network" || err.type === "server-error" || err.type === "socket-error" || err.type === "socket-closed") {
+          console.warn(`🔄 PeerJS ${err.type} — will recreate peer with backoff`);
+
+          // If we were in a session or connecting, clean up first
+          if (isConnectingRef.current || callRef.current) {
+            resetSession({ type: "server", message: "Lost connection to server. Reconnecting…" });
+          } else {
+            // Just on home screen — show non-blocking reconnecting notice
+            setConnectError({ type: "server", message: "Lost connection to server. Reconnecting…" });
+          }
+
+          // Exponential backoff: 2^n * 1000ms, capped at 30s
+          peerReconnectCount = Math.min(peerReconnectCount + 1, 5);
+          const delay = Math.min(Math.pow(2, peerReconnectCount) * 1000, 30000);
+          console.log(`🔄 Recreating peer in ${delay}ms (attempt ${peerReconnectCount})`);
+
+          peerReconnectTimer = setTimeout(() => {
+            if (!peer.destroyed) {
+              try { peer.destroy(); } catch {}
+            }
+            createPeer();
+          }, delay);
+          return;
+        }
+
+        // ── webrtc / ICE failure during active session ───────────────────────
+        if (isConnectingRef.current || callRef.current) {
+          resetSession({ type: "error", message: "Connection failed due to a network error. Please try again." });
+        }
+      });
+
+      // CORNER CASE: host already in session — auto-reject new caller
+      // CORNER CASE: viewer cancels while host sees modal — dismiss via close listener
+      peer.on("call", call => {
+        if (callRef.current) {
+          console.warn("📵 Busy — auto-rejecting call from", call.peer);
+          closeCall(call);
+          socket.emit("callrejected", { remoteId: call.peer });
+          return;
+        }
+
+        // If viewer cancels before host accepts, auto-dismiss the modal
+        call.on("close", () => {
+          setIncomingCall(prev => (prev === call ? null : prev));
+          setIncomingCallerId(prev => (prev === call.peer ? "" : prev));
+        });
+
+        setIncomingCall(call);
+        setIncomingCallerId(call.peer);
+      });
+
+      peerInstance.current = peer;
+      return peer;
+    };
+
+    createPeer();
 
     // CORNER CASE E: app closed while session active or connecting.
     // CRITICAL: We must wait for the server to relay "remotedisconnected" to
@@ -398,6 +464,8 @@ const App = () => {
       dispatch(setShowSessionDialog(false));
       ipcRenderer.send("session-started");
       setTimeout(() => ipcRenderer.invoke("RESTORE_WIN"), 1000);
+      // Tell server to track session pair for unexpected-disconnect notification
+      socketRef.current?.emit("session-pair", { myId: userIdRef.current, remoteId: call.peer });
 
       call.on("close", () => resetSession());
       call.on("error", e => {
@@ -473,6 +541,8 @@ const App = () => {
       setRemoteStream(stream);
       dispatch(setSessionMode(1));
       dispatch(setSessionStartTime(new Date()));
+      // Tell server to track session pair for unexpected-disconnect notification
+      socketRef.current?.emit("session-pair", { myId: userIdRef.current, remoteId: String(remoteId) });
     });
 
     // CORNER CASE: network failure mid-call
